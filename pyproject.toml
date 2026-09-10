@@ -1,0 +1,35 @@
+[project]
+name = "samiir-fatma-platform"
+version = "0.1.0"
+description = "Secure multi-tenant SAMIIR customer service and FATMA defensive SOC platform"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1", "pydantic-settings>=2.10,<3",
+  "sqlalchemy[asyncio]>=2.0.41,<3", "asyncpg>=0.30,<1", "alembic>=1.16,<2",
+  "pyjwt[crypto]>=2.10,<3", "httpx>=0.28,<1", "redis>=6.2,<7",
+  "openai-agents>=0.2,<1", "temporalio>=1.14,<2", "pgvector>=0.4,<1",
+  "opentelemetry-sdk>=1.35,<2", "email-validator>=2.2,<3"
+]
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.0,<2", "ruff>=0.12,<1", "mypy>=1.16,<2"]
+[tool.pytest.ini_options]
+pythonpath = ["apps/api"]
+asyncio_mode = "auto"
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools]
+package-dir = {"" = "apps/api"}
+[tool.setuptools.packages.find]
+where = ["apps/api"]
+include = ["app*"]
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+"apps/api/app/core/auth.py" = ["B008"]
+"apps/api/app/api/routes.py" = ["B008"]
