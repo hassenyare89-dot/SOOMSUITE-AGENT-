@@ -116,7 +116,7 @@ def build_runtime(settings: BaseServiceSettings, downstream: dict[str, str | Non
         clients["audit"] = ServiceClient("audit", settings.audit_url, identity, verify=verify)
         audit = AuditClient(name, HttpAuditSink(clients["audit"], name))
     else:
-        if settings.is_production_like:
+        if settings.is_production_like and name != "audit":
             raise RuntimeError("AUDIT_URL is mandatory outside development")
         audit = AuditClient(name, MemoryAuditSink())
     secret_manager = DefaultSecretManager(allow_env=not settings.is_production_like)

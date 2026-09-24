@@ -76,6 +76,13 @@ class ServiceIdentity:
         self._key = private_key
         self._ttl = ttl_seconds
 
+    def sign(self, data: bytes) -> bytes:
+        """Detached Ed25519 signature (e.g. approval attestations)."""
+        return self._key.sign(data)
+
+    def public_key_b64(self) -> str:
+        return public_key_to_b64(self._key.public_key())
+
     def mint(
         self,
         audience: str,

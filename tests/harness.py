@@ -36,6 +36,12 @@ SERVICES: dict[str, tuple[str, str | None, list[str]]] = {
     "samiir-agent": ("samiir_agent", "svc_samiir",
                      ["knowledge", "crm", "scheduling", "notifications", "whatsapp"]),
     "whatsapp": ("whatsapp_service", "svc_whatsapp", ["samiir-agent", "notifications"]),
+    "audit": ("audit_service", "svc_audit", []),
+    "approvals": ("approval_service", "svc_approvals", []),
+    "fatma-soc": ("fatma_soc", "svc_fatma", ["approvals", "notifications"]),
+    "security-ingest": ("security_ingest", "svc_security_ingest", ["fatma-soc"]),
+    "scanner-controller": ("scanner_controller", "svc_scanner_controller",
+                           ["approvals", "fatma-soc"]),
 }
 
 ALL_NAMES = ["api-gateway-public", "api-gateway-admin", "samiir-agent", "fatma-soc", "crm",
@@ -123,6 +129,11 @@ async def start_platform(stack: AsyncExitStack, tmp: Path, base_db_url: str,
         }
         if name == "notifications":
             overrides["run_worker"] = False
+        if name == "fatma-soc":
+            overrides["run_background"] = False
+        if name == "security-ingest":
+            overrides["raw_store_path"] = tmp / "raw"
+            overrides["quarantine_path"] = tmp / "quarantine"
         settings = cfg.Settings(**overrides)
         rt = build_runtime(settings, {})
         rt.audit = AuditClient(name, audit_sink)
