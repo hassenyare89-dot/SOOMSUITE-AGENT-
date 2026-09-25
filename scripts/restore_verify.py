@@ -1,6 +1,7 @@
 """Backup restore drill verification (used by .github/workflows/restore-drill.yml).
 
-Connects to a restored instance with a read-only drill credential and checks:
+Connects to a restored instance with a read-only drill role (needs BYPASSRLS to read every
+tenant's audit rows; created only in the isolated drill account) and checks:
 * the schema is at the Alembic head this commit expects,
 * core tables are non-empty / readable,
 * every tenant's audit hash chain still verifies end to end.
