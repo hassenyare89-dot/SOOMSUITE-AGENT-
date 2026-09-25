@@ -55,7 +55,7 @@ services:
     healthcheck: { test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"], interval: 5s, retries: 20 }
     environment: { REDIS_PASSWORD: "${REDIS_PASSWORD}" }
     volumes: [redis-data:/data]
-    networks: [samiir_data, fatma_data]
+    networks: [samiir_data, fatma_data, edge_cache]
 
   migrate:
     build: { context: ., dockerfile: infra/docker/migrate.Dockerfile }
@@ -141,7 +141,8 @@ services:
       TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
     secrets: [{ source: key_gateway_public, target: key }, trust_bundle]
     ports: ["127.0.0.1:8000:8000"]
-    networks: [edge, samiir_net, ingest_net, samiir_data]
+    # Redis only (sessions/rate limits) — no route to PostgreSQL from the internet edge.
+    networks: [edge, samiir_net, ingest_net, edge_cache]
 
   api-gateway-admin:
     <<: *python
@@ -424,6 +425,7 @@ networks:
   fatma_net: { internal: true }
   ingest_net: { internal: true }
   samiir_data: { internal: true }
+  edge_cache: { internal: true }
   fatma_data: { internal: true }
   temporal_net: { internal: true }
   malware_net: { internal: true }

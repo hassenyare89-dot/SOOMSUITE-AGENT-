@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 from sqlalchemy import select, text
 
-from audit_service.chain import GENESIS, entry_hash
+from audit_service.chain import CHAINED_FIELDS, GENESIS, entry_hash, verify_rows
 from platform_core.audit import AuditEvent
 from platform_core.db.engine import Database
 from platform_core.db.models import AuditLog
@@ -97,15 +97,6 @@ class AuditStore:
     async def verify(self, tenant_id: uuid.UUID) -> dict[str, Any]:
         async with self.db.tenant_session(tenant_id) as s:
             rows = (await s.scalars(select(AuditLog).order_by(AuditLog.seq))).all()
-        prev, expected_seq = GENESIS, 1
-        for r in rows:
-            entry = {k: getattr(r, k) for k in (
-                "tenant_id", "seq", "actor_type", "actor_id", "agent_name", "agent_run_id",
-                "service", "tool_name", "action", "target_type", "target_id", "request_id",
-                "source_ip", "result", "risk_level", "approval_id", "metadata_redacted",
-                "created_at")}
-            entry["created_at"] = r.created_at.astimezone(UTC)
-            if r.seq != expected_seq or r.prev_hash != prev or r.entry_hash != entry_hash(prev, entry):
-                return {"valid": False, "broken_at_seq": r.seq, "entries": len(rows)}
-            prev, expected_seq = r.entry_hash, expected_seq + 1
-        return {"valid": True, "entries": len(rows), "head": prev}
+        cols = [*CHAINED_FIELDS, "prev_hash", "entry_hash"]
+        ok, detail = verify_rows([{k: getattr(r, k) for k in cols} for r in rows])
+        return {"valid": ok, **detail}

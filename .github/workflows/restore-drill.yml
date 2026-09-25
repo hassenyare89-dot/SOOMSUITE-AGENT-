@@ -1,0 +1,36 @@
+name: backup-restore-drill
+
+# Weekly: restore the latest encrypted snapshot into an isolated account, run migrations
+# check + audit-chain verification + smoke queries, then destroy. Failure pages on-call.
+on:
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  drill:
+    runs-on: ubuntu-24.04
+    environment: dr-drill
+    steps:
+      - uses: actions/checkout@v5
+        with: { persist-credentials: false }
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.DR_DRILL_ROLE_ARN }}
+          aws-region: ${{ vars.DR_REGION }}
+      - name: Restore latest snapshot
+        run: |
+          SNAP=$(aws rds describe-db-snapshots --snapshot-type awsbackup \
+            --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[0].DBSnapshotIdentifier' --output text)
+          aws rds restore-db-instance-from-db-snapshot --db-instance-identifier "drill-${GITHUB_RUN_ID}" \
+            --db-snapshot-identifier "$SNAP" --no-publicly-accessible --db-subnet-group-name "${{ vars.DR_SUBNET_GROUP }}"
+          aws rds wait db-instance-available --db-instance-identifier "drill-${GITHUB_RUN_ID}"
+      - name: Verify (row counts, alembic head, audit hash chains)
+        run: python scripts/restore_verify.py --instance "drill-${GITHUB_RUN_ID}"
+      - name: Tear down
+        if: always()
+        run: aws rds delete-db-instance --db-instance-identifier "drill-${GITHUB_RUN_ID}" --skip-final-snapshot
