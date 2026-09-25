@@ -1,0 +1,25 @@
+# Runs before every upgrade with the schema-owner credential (never available to services).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-{{ .Release.Revision }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  # Successful runs are removed by the hook policy; keep a failed run for a day to inspect.
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: migrate
+          image: "{{ .Values.global.imageRegistry }}/migrate:{{ .Values.global.imageTag }}"
+          envFrom: [{ secretRef: { name: db-migration } }]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }

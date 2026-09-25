@@ -1,0 +1,178 @@
+# Production values. Images must be signed (cosign) and referenced by digest in prod.
+global:
+  imageRegistry: ghcr.io/hassenyare89-dot/samiir-fatma
+  imageTag: "0.2.0"
+  environment: production
+  domain: example.com
+  # External Secrets Operator store holding every secret (Vault / AWS Secrets Manager).
+  secretStore: platform-secrets
+  mesh: istio              # istio | linkerd | none (none => app-level mTLS certs required)
+  otelEndpoint: http://otel-collector.observability:4317
+  databaseHost: platform-db.internal:5432
+  databaseName: platform
+  redisUrlSecretKey: redis-url
+  temporalAddress: temporal-frontend.temporal:7233
+
+podSecurity: &podSecurity
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+
+# Each service: its own ServiceAccount (= mesh identity), DB role, secrets and callers.
+# `callers` generates both the NetworkPolicy ingress rules and the Istio AuthorizationPolicy,
+# mirroring platform_core.security.service_acl.ACCEPTED_CALLERS.
+services:
+  api-gateway-public:
+    image: api-gateway
+    app: api_gateway.main:create_public
+    side: edge
+    replicas: 3
+    callers: [ingress-public]
+    egressTo: [samiir-agent, whatsapp, security-ingest, audit]
+    secrets: [csrf-key]
+    env: { GATEWAY_MODE: public }
+  api-gateway-admin:
+    image: api-gateway
+    app: api_gateway.main:create_admin
+    side: edge
+    replicas: 2
+    dbRole: svc_gateway_admin
+    callers: [ingress-admin]
+    egressTo: [samiir-agent, crm, scheduling, knowledge, notifications, whatsapp, fatma-soc,
+               scanner-controller, security-ingest, approvals, audit]
+    secrets: [csrf-key, field-encryption-keyring, blind-index-key, oidc-client-secret]
+    env: { GATEWAY_MODE: admin, REQUIRE_MFA: "true" }
+  samiir-agent:
+    image: samiir-agent
+    app: samiir_agent.main:create
+    side: samiir
+    replicas: 3
+    dbRole: svc_samiir
+    callers: [api-gateway-public, api-gateway-admin, whatsapp]
+    egressTo: [knowledge, crm, scheduling, notifications, whatsapp, audit]
+    internetEgress: [api.openai.com]
+    secrets: [field-encryption-keyring, blind-index-key, samiir-openai-api-key]
+  crm:
+    image: crm
+    app: crm_service.main:create
+    side: samiir
+    dbRole: svc_crm
+    callers: [samiir-agent, api-gateway-admin, scheduling, notifications]
+    egressTo: [audit]
+    secrets: [field-encryption-keyring, blind-index-key]
+  scheduling:
+    image: scheduling
+    app: scheduling_service.main:create
+    side: samiir
+    dbRole: svc_scheduling
+    callers: [samiir-agent, api-gateway-admin]
+    egressTo: [crm, notifications, audit]
+    internetEgress: [www.googleapis.com, oauth2.googleapis.com, graph.microsoft.com, login.microsoftonline.com]
+    secrets: [slot-token-key]
+  knowledge:
+    image: knowledge
+    app: knowledge_service.main:create
+    side: samiir
+    dbRole: svc_knowledge
+    callers: [samiir-agent, api-gateway-admin]
+    egressTo: [audit]
+    internetEgress: [api.openai.com]
+    secrets: [samiir-openai-api-key]
+  notifications:
+    image: notifications
+    app: notifications_service.main:create
+    side: shared
+    dbRole: svc_notifications
+    callers: [samiir-agent, scheduling, fatma-soc, api-gateway-admin, whatsapp]
+    egressTo: [crm, whatsapp, audit]
+    internetEgress: [smtp.example.com, hooks.slack.com]
+    secrets: [field-encryption-keyring, blind-index-key]
+  whatsapp:
+    image: whatsapp
+    app: whatsapp_service.main:create
+    side: samiir
+    dbRole: svc_whatsapp
+    callers: [api-gateway-public, notifications, api-gateway-admin, samiir-agent]
+    egressTo: [samiir-agent, notifications, audit]
+    internetEgress: [graph.facebook.com]
+    secrets: [meta-app-secret, meta-verify-token]
+  fatma-soc:
+    image: fatma-soc
+    app: fatma_soc.main:create
+    side: fatma
+    dbRole: svc_fatma
+    callers: [api-gateway-admin, security-ingest, scanner-controller]
+    egressTo: [approvals, notifications, audit]
+    internetEgress: [api.openai.com, api.cloudflare.com, wafv2.us-east-1.amazonaws.com]
+    secrets: [fatma-openai-api-key]
+  security-ingest:
+    image: security-ingest
+    app: security_ingest.main:create
+    side: fatma
+    dbRole: svc_security_ingest
+    callers: [api-gateway-public, api-gateway-admin, scanner-controller]
+    egressTo: [fatma-soc, audit, temporal]
+    secrets: [quarantine-key, pseudonym-key]
+    env: { TEMPORAL_ADDRESS: "temporal-frontend.temporal:7233" }
+  scanner-controller:
+    image: scanner-controller
+    app: scanner_controller.main:create
+    side: fatma
+    dbRole: svc_scanner_controller
+    callers: [api-gateway-admin, fatma-soc]
+    egressTo: [approvals, fatma-soc, audit, temporal]
+    internetEgress: ["*dns-and-https-verification*"]
+    env: { TEMPORAL_ADDRESS: "temporal-frontend.temporal:7233" }
+  approvals:
+    image: approvals
+    app: approval_service.main:create
+    side: fatma
+    dbRole: svc_approvals
+    callers: [api-gateway-admin, fatma-soc, scanner-controller]
+    egressTo: [audit]
+  audit:
+    image: audit
+    app: audit_service.main:create
+    side: shared
+    dbRole: svc_audit
+    callers: [api-gateway-public, api-gateway-admin, samiir-agent, fatma-soc, crm, scheduling,
+              notifications, knowledge, whatsapp, security-ingest, scanner-controller, approvals]
+    egressTo: []
+    internetEgress: [siem.example.com]
+
+workers:
+  scanner-worker:
+    image: scanner-worker
+    role: scanner
+    replicas: 2
+    # Dedicated, tainted node pool; egress to the public internet only (RFC1918, link-local,
+    # metadata and cluster CIDRs are denied) — see templates/workers.yaml.
+    nodeSelector: { workload: scanners }
+    tolerations: [{ key: workload, value: scanners, effect: NoSchedule }]
+    resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
+  malware-worker:
+    image: scanner-worker
+    role: malware
+    replicas: 2
+    nodeSelector: { workload: sandbox }
+    tolerations: [{ key: workload, value: sandbox, effect: NoSchedule }]
+    runtimeClassName: gvisor
+    resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+
+denyEgressCIDRs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16,
+                  127.0.0.0/8, fc00::/7, fe80::/10]
+
+ingress:
+  className: nginx
+  publicHost: chat.example.com
+  adminHost: console.example.com
+  # Admin console should additionally sit behind a zero-trust access proxy (IAP/Cloudflare Access).
+  adminAllowCIDRs: []
+
+resources:
+  default: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+
+# service name -> base64 raw Ed25519 public key (generated by the key-management pipeline).
+trustBundle: {}

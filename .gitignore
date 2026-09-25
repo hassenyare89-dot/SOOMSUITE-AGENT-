@@ -9,3 +9,10 @@ node_modules/
 dist/
 coverage/
 *.egg-info/
+.secrets/
+*.pem
+.mypy_cache/
+node_modules/
+apps/web/.next/
+apps/web/tsconfig.tsbuildinfo
+.run/
