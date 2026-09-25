@@ -48,17 +48,21 @@ def create(settings: Settings | None = None) -> FastAPI:
                                                 namespace=settings.temporal_namespace)
             rt.extras["temporal_worker"] = await _start_worker(svc, settings)
         elif settings.environment in (Environment.DEVELOPMENT, Environment.TEST):
-            import scanner_worker
-            from scanner_worker.malware import YaraEngine, analyze
+            try:
+                from importlib import resources
 
-            rules = YaraEngine(Path(scanner_worker.__file__).parent / "rules")
-            clamd = (settings.clamd_host, settings.clamd_port) if settings.clamd_host else None
+                from scanner_worker.malware import YaraEngine, analyze
+            except ImportError:
+                log.warning("no Temporal and no local analyzer: samples stay pending")
+            else:
+                rules = YaraEngine(Path(str(resources.files("scanner_worker").joinpath("rules"))))
+                clamd = (settings.clamd_host, settings.clamd_port) if settings.clamd_host else None
 
-            async def inline(data: bytes, declared: str | None) -> dict:
-                return await analyze(data, declared_mime=declared, yara=rules, clamd=clamd)
+                async def inline(data: bytes, declared: str | None) -> dict:
+                    return await analyze(data, declared_mime=declared, yara=rules, clamd=clamd)
 
-            svc.inline_analyzer = inline
-            log.warning("malware analysis running INLINE (development only; no sandbox)")
+                svc.inline_analyzer = inline
+                log.warning("malware analysis running INLINE (development only; no sandbox)")
         rt.extras["ingest"] = svc
 
     async def shutdown(rt: ServiceRuntime) -> None:

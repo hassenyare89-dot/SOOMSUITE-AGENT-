@@ -1,0 +1,31 @@
+{{- if eq .Values.global.mesh "istio" }}
+# Mutual TLS everywhere; plaintext is rejected.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata: { name: default }
+spec:
+  mtls: { mode: STRICT }
+{{- range $name, $svc := .Values.services }}
+---
+# Layer-7 identity check (SPIFFE principal of the caller's ServiceAccount) in front of the
+# application-level Ed25519 service token check.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: { name: {{ $name }} }
+spec:
+  selector: { matchLabels: { app: {{ $name }} } }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              {{- range $svc.callers }}
+              {{- if hasPrefix "ingress-" . }}
+              - "cluster.local/ns/ingress-nginx/sa/ingress-nginx"
+              {{- else }}
+              - "cluster.local/ns/{{ $.Release.Namespace }}/sa/{{ . }}"
+              {{- end }}
+              {{- end }}
+    - to: [{ operation: { paths: ["/healthz", "/readyz"], methods: ["GET"] } }]
+{{- end }}
+{{- end }}

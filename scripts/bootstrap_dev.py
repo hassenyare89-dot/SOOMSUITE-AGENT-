@@ -80,16 +80,21 @@ def main() -> None:
     bundle = json.loads(bundle_path.read_text())["keys"] if bundle_path.exists() else {}
     for svc in SERVICES:
         pem_path = keys / f"{svc}.pem"
+        if pem_path.exists():
+            os.chmod(pem_path, 0o644)
         if args.rotate_keys or not pem_path.exists() or svc not in bundle:
             pem, pub = generate_keypair()
             pem_path.write_bytes(pem)
-            os.chmod(pem_path, 0o600)
+            # Compose file-secrets are bind mounts that keep host permissions; the files must
+            # be readable by the non-root container user. The enclosing .secrets/ directory
+            # stays 0700, so other host users still cannot reach them.
+            os.chmod(pem_path, 0o644)
             bundle[svc] = pub
     bundle_path.write_text(json.dumps({"keys": bundle}, indent=2))
     qk = ROOT / ".secrets" / "quarantine.key"
     quarantine = next(line.split("=", 1)[1] for line in out if line.startswith("QUARANTINE_KEY="))
     qk.write_text(quarantine)
-    os.chmod(qk, 0o600)
+    os.chmod(qk, 0o644)
     print(f"wrote {env_path} and {len(SERVICES)} service identities under {keys}")
 
 

@@ -1,0 +1,109 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels: {{- include "sf.labels" $ | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    platform.side: {{ $svc.side }}
+    {{- include "sf.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas | default 2 }}
+  revisionHistoryLimit: 5
+  selector: { matchLabels: { app: {{ $name }} } }
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        platform.side: {{ $svc.side }}
+      annotations:
+        sidecar.istio.io/inject: {{ eq $.Values.global.mesh "istio" | quote }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml $.Values.podSecurity | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: {{ $name }} } }
+      containers:
+        - name: app
+          image: "{{ $.Values.global.imageRegistry }}/{{ $svc.image }}:{{ $.Values.global.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 8000 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            - { name: APP, value: {{ $svc.app | quote }} }
+            - { name: SERVICE_NAME, value: {{ $name | quote }} }
+            - { name: ENVIRONMENT, value: {{ $.Values.global.environment | quote }} }
+            - { name: SERVICE_PRIVATE_KEY_PATH, value: /var/run/identity/key.pem }
+            - { name: SERVICE_TRUST_BUNDLE_PATH, value: /var/run/trust/trust.json }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ $.Values.global.otelEndpoint | quote }} }
+            {{- if ne $name "audit" }}
+            - { name: AUDIT_URL, value: "http://audit:8000" }
+            {{- end }}
+            {{- range $svc.egressTo }}
+            {{- $var := include "sf.urlVar" . }}
+            {{- if and $var (or (ne . "audit") (hasPrefix "api-gateway" $name)) }}
+            - { name: {{ $var }}, value: "http://{{ . }}:8000" }
+            {{- end }}
+            {{- end }}
+            {{- range $k, $v := $svc.env }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+          envFrom:
+            - secretRef: { name: {{ $name }}-secrets }
+          volumeMounts:
+            - { name: identity, mountPath: /var/run/identity, readOnly: true }
+            - { name: trust, mountPath: /var/run/trust, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 20 }
+          resources: {{- toYaml ($svc.resources | default $.Values.resources.default) | nindent 12 }}
+      volumes:
+        - name: identity
+          secret: { secretName: {{ $name }}-identity, defaultMode: 0400 }
+        - name: trust
+          configMap: { name: service-trust-bundle }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "sf.labels" $ | nindent 4 }}
+spec:
+  selector: { app: {{ $name }} }
+  ports: [{ name: http, port: 8000, targetPort: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: {{ $name }} }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: {{ $name }} } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: {{ $name }} }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+  minReplicas: {{ $svc.replicas | default 2 }}
+  maxReplicas: {{ mul ($svc.replicas | default 2) 4 }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+{{- end }}

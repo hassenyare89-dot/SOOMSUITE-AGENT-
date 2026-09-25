@@ -1,0 +1,58 @@
+# Default deny for everything in the namespace, then explicit allows derived from the
+# service ACL. SAMIIR-side pods have no network path to FATMA-side pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: {{ $name }}-ingress }
+spec:
+  podSelector: { matchLabels: { app: {{ $name }} } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $svc.callers }}
+        {{- if hasPrefix "ingress-" . }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+        {{- else }}
+        - podSelector: { matchLabels: { app: {{ . }} } }
+        {{- end }}
+        {{- end }}
+      ports: [{ port: 8000, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: {{ $name }}-egress }
+spec:
+  podSelector: { matchLabels: { app: {{ $name }} } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    {{- if $svc.egressTo }}
+    - to:
+        {{- range $svc.egressTo }}
+        {{- if eq . "temporal" }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: temporal } }
+        {{- else }}
+        - podSelector: { matchLabels: { app: {{ . }} } }
+        {{- end }}
+        {{- end }}
+      ports: [{ port: 8000, protocol: TCP }, { port: 7233, protocol: TCP }]
+    {{- end }}
+    - to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]   # data subnet: PostgreSQL + Redis (private)
+      ports: [{ port: 5432, protocol: TCP }, { port: 6379, protocol: TCP }]
+    {{- if $svc.internetEgress }}
+    # Internet egress (FQDN-restricted by the egress gateway / Istio ServiceEntry).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{- toYaml $.Values.denyEgressCIDRs | nindent 14 }}
+      ports: [{ port: 443, protocol: TCP }, { port: 587, protocol: TCP }]
+    {{- end }}
+{{- end }}
