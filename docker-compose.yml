@@ -14,13 +14,12 @@ name: samiir-fatma
 
 x-python: &python
   restart: unless-stopped
-  # Key files under .secrets/ are mode 0640 owned by the host user's group.
-  group_add: ["${SECRETS_GID:?run scripts/bootstrap_dev.py first}"]
   read_only: true
   tmpfs: [/tmp]
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   depends_on:
+    keys-init: { condition: service_completed_successfully }
     migrate: { condition: service_completed_successfully }
     redis: { condition: service_healthy }
 
@@ -58,6 +57,37 @@ services:
     environment: { REDIS_PASSWORD: "${REDIS_PASSWORD}" }
     volumes: [redis-data:/data]
     networks: [samiir_data, fatma_data, edge_cache]
+
+  # Distributes per-service identities. Host key files stay 0600 (owner only); this one-shot
+  # container copies each service's key + the public trust bundle into its own subdirectory of
+  # the service-keys volume, owned by that service's uid with mode 0400. Each service mounts
+  # only its own subdirectory, read-only, at /run/secrets. Re-runs on every `up` (rotation).
+  keys-init:
+    image: busybox:1.37
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./.secrets:/src:ro
+      - service-keys:/keys
+    command:
+      - sh
+      - -euc
+      - |
+        install_key() {  # <dir> <source file> <target name> <uid>
+          mkdir -p "/keys/$$1" && cp "$$2" "/keys/$$1/$$3" && chown "$$4:$$4" "/keys/$$1/$$3" && chmod 0400 "/keys/$$1/$$3"
+        }
+        for svc in api-gateway-public api-gateway-admin samiir-agent crm scheduling knowledge \
+                   whatsapp notifications fatma-soc security-ingest scanner-controller approvals audit; do
+          install_key "$$svc" "/src/service-keys/$$svc.pem" key 10001
+          install_key "$$svc" /src/service-keys/trust.json trust_bundle 10001
+          chmod 0444 "/keys/$$svc/trust_bundle"
+        done
+        install_key malware-worker /src/quarantine.key quarantine_key 1000
+        echo "service keys installed"
 
   migrate:
     build: { context: ., dockerfile: infra/docker/migrate.Dockerfile }
@@ -141,7 +171,7 @@ services:
       COOKIE_SECURE: "false"
       ALLOWED_ORIGINS: '["${WEB_ORIGIN:-http://localhost:3000}"]'
       TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
-    secrets: [{ source: key_gateway_public, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: api-gateway-public } }]
     ports: ["127.0.0.1:8000:8000"]
     # Redis only (sessions/rate limits) — no route to PostgreSQL from the internet edge.
     networks: [edge, samiir_net, ingest_net, edge_cache]
@@ -183,7 +213,7 @@ services:
       OIDC_JWKS_URL: ${OIDC_JWKS_URL}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI}
       POST_LOGIN_REDIRECT: ${WEB_ORIGIN:-http://localhost:3000}/
-    secrets: [{ source: key_gateway_admin, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: api-gateway-admin } }]
     ports: ["127.0.0.1:8001:8000"]
     networks: [edge, samiir_net, fatma_net, fatma_data]
 
@@ -206,7 +236,7 @@ services:
       BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
       SAMIIR_OPENAI_API_KEY: ${SAMIIR_OPENAI_API_KEY}
       OPENAI_MODEL: ${SAMIIR_OPENAI_MODEL:-gpt-5.4-mini}
-    secrets: [{ source: key_samiir, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: samiir-agent } }]
     networks: [samiir_net, samiir_data, samiir_egress]
 
   crm:
@@ -220,7 +250,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://svc_crm:${DB_PASSWORD_SVC_CRM}@postgres:5432/${POSTGRES_DB:-platform}
       FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
       BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
-    secrets: [{ source: key_crm, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: crm } }]
     networks: [samiir_net, samiir_data]
 
   scheduling:
@@ -235,7 +265,7 @@ services:
       CRM_URL: http://crm:8000
       NOTIFICATIONS_URL: http://notifications:8000
       SLOT_TOKEN_KEY: ${SLOT_TOKEN_KEY}
-    secrets: [{ source: key_scheduling, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: scheduling } }]
     networks: [samiir_net, samiir_data, samiir_egress]
 
   knowledge:
@@ -249,7 +279,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://svc_knowledge:${DB_PASSWORD_SVC_KNOWLEDGE}@postgres:5432/${POSTGRES_DB:-platform}
       OPENAI_API_KEY: ${SAMIIR_OPENAI_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
-    secrets: [{ source: key_knowledge, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: knowledge } }]
     networks: [samiir_net, samiir_data, samiir_egress]
 
   whatsapp:
@@ -266,7 +296,7 @@ services:
       META_APP_SECRET: ${META_APP_SECRET}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN}
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
-    secrets: [{ source: key_whatsapp, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: whatsapp } }]
     networks: [samiir_net, samiir_data, samiir_egress]
 
   notifications:
@@ -285,7 +315,7 @@ services:
       EMAIL_FROM: ${EMAIL_FROM}
       FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
       BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
-    secrets: [{ source: key_notifications, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: notifications } }]
     networks: [samiir_net, fatma_net, samiir_data, notify_egress]
 
   # --------------------------------------------------------------------- FATMA side
@@ -303,7 +333,7 @@ services:
       FATMA_OPENAI_API_KEY: ${FATMA_OPENAI_API_KEY}
       OPENAI_MODEL: ${FATMA_OPENAI_MODEL:-gpt-5.5}
       CONSOLE_BASE_URL: ${WEB_ORIGIN:-http://localhost:3000}
-    secrets: [{ source: key_fatma, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: fatma-soc } }]
     networks: [fatma_net, fatma_data, fatma_egress]
 
   security-ingest:
@@ -322,8 +352,7 @@ services:
       RAW_STORE_PATH: /var/lib/security-ingest/raw
       QUARANTINE_PATH: /var/lib/quarantine
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-}
-    volumes: [raw-events:/var/lib/security-ingest/raw, quarantine:/var/lib/quarantine]
-    secrets: [{ source: key_security_ingest, target: key }, trust_bundle]
+    volumes: [raw-events:/var/lib/security-ingest/raw, quarantine:/var/lib/quarantine, { type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: security-ingest } }]
     networks: [fatma_net, ingest_net, fatma_data, temporal_net]
 
   scanner-controller:
@@ -338,7 +367,7 @@ services:
       APPROVALS_URL: http://approvals:8000
       FATMA_URL: http://fatma-soc:8000
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-}
-    secrets: [{ source: key_scanner_controller, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: scanner-controller } }]
     networks: [fatma_net, fatma_data, temporal_net, fatma_egress]
 
   approvals:
@@ -350,7 +379,7 @@ services:
       SERVICE_NAME: approvals
       SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
       DATABASE_URL: postgresql+asyncpg://svc_approvals:${DB_PASSWORD_SVC_APPROVALS}@postgres:5432/${POSTGRES_DB:-platform}
-    secrets: [{ source: key_approvals, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: approvals } }]
     networks: [fatma_net, fatma_data]
 
   audit:
@@ -364,7 +393,7 @@ services:
       SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
       DATABASE_URL: postgresql+asyncpg://svc_audit:${DB_PASSWORD_SVC_AUDIT}@postgres:5432/${POSTGRES_DB:-platform}
       SIEM_WEBHOOK_URL: ${SIEM_WEBHOOK_URL:-}
-    secrets: [{ source: key_audit, target: key }, trust_bundle]
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: audit } }]
     networks: [samiir_net, fatma_net, fatma_data]
 
   # ------------------------------------------------------- isolated workers (profile)
@@ -393,9 +422,8 @@ services:
       CLAMD_HOST: clamav
       QUARANTINE_KEY_FILE: /run/secrets/quarantine_key
       QUARANTINE_PATH: /var/lib/quarantine
-    secrets: [quarantine_key]
-    group_add: ["${SECRETS_GID:?run scripts/bootstrap_dev.py first}"]
-    volumes: [quarantine:/var/lib/quarantine:ro]
+    depends_on: { keys-init: { condition: service_completed_successfully } }
+    volumes: [quarantine:/var/lib/quarantine:ro, { type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: malware-worker } }]
     read_only: true
     tmpfs: ["/tmp:size=256m"]
     cap_drop: [ALL]
@@ -405,22 +433,6 @@ services:
     # No internet egress at all: Temporal + ClamAV only.
     networks: [temporal_net, malware_net]
 
-secrets:
-  trust_bundle: { file: ./.secrets/service-keys/trust.json }
-  quarantine_key: { file: ./.secrets/quarantine.key }
-  key_gateway_public: { file: ./.secrets/service-keys/api-gateway-public.pem }
-  key_gateway_admin: { file: ./.secrets/service-keys/api-gateway-admin.pem }
-  key_samiir: { file: ./.secrets/service-keys/samiir-agent.pem }
-  key_crm: { file: ./.secrets/service-keys/crm.pem }
-  key_scheduling: { file: ./.secrets/service-keys/scheduling.pem }
-  key_knowledge: { file: ./.secrets/service-keys/knowledge.pem }
-  key_whatsapp: { file: ./.secrets/service-keys/whatsapp.pem }
-  key_notifications: { file: ./.secrets/service-keys/notifications.pem }
-  key_fatma: { file: ./.secrets/service-keys/fatma-soc.pem }
-  key_security_ingest: { file: ./.secrets/service-keys/security-ingest.pem }
-  key_scanner_controller: { file: ./.secrets/service-keys/scanner-controller.pem }
-  key_approvals: { file: ./.secrets/service-keys/approvals.pem }
-  key_audit: { file: ./.secrets/service-keys/audit.pem }
 
 networks:
   edge: {}
@@ -439,6 +451,7 @@ networks:
   clamav_updates: {}
 
 volumes:
+  service-keys: {}
   postgres-data: {}
   redis-data: {}
   temporal-data: {}

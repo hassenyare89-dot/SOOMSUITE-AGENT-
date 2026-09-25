@@ -16,18 +16,19 @@ jobs:
     runs-on: ubuntu-24.04
     environment: dr-drill
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: aws-actions/configure-aws-credentials@v5
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
           role-to-assume: ${{ vars.DR_DRILL_ROLE_ARN }}
           aws-region: ${{ vars.DR_REGION }}
       - name: Restore latest snapshot
+        env: { DR_SUBNET_GROUP: "${{ vars.DR_SUBNET_GROUP }}" }
         run: |
           SNAP=$(aws rds describe-db-snapshots --snapshot-type awsbackup \
             --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[0].DBSnapshotIdentifier' --output text)
           aws rds restore-db-instance-from-db-snapshot --db-instance-identifier "drill-${GITHUB_RUN_ID}" \
-            --db-snapshot-identifier "$SNAP" --no-publicly-accessible --db-subnet-group-name "${{ vars.DR_SUBNET_GROUP }}"
+            --db-snapshot-identifier "$SNAP" --no-publicly-accessible --db-subnet-group-name "$DR_SUBNET_GROUP"
           aws rds wait db-instance-available --db-instance-identifier "drill-${GITHUB_RUN_ID}"
       - name: Verify (row counts, alembic head, audit hash chains)
         run: python scripts/restore_verify.py --instance "drill-${GITHUB_RUN_ID}"

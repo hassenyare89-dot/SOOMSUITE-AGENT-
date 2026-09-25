@@ -18,7 +18,14 @@ from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*){0,15}")
+_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _valid_key(key: str) -> bool:
+    """1–16 "/"-separated segments of safe characters; each segment checked on its own."""
+    parts = key.split("/")
+    return len(key) <= 512 and 0 < len(parts) <= 16 and all(
+        p not in {".", ".."} and _SEGMENT.fullmatch(p) for p in parts)
 
 
 class ObjectStore(Protocol):
@@ -33,7 +40,7 @@ class FilesystemObjectStore:
         self._root_real = os.path.realpath(root)
 
     def _path(self, key: str) -> Path:
-        if not _KEY.fullmatch(key) or ".." in key.split("/"):
+        if not _valid_key(key):
             raise ValueError("invalid object key")
         full = os.path.normpath(os.path.join(self._root_real, key))
         if not full.startswith(self._root_real + os.sep):

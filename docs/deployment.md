@@ -17,8 +17,11 @@ docker compose --profile scanners up -d  # Temporal UI :8233, ClamAV, scanner-wo
 | http://localhost:8025 | Mailpit (captured emails) |
 
 All ports bind to `127.0.0.1`. Containers run as uid 10001 with read-only root filesystems,
-`no-new-privileges`, and all capabilities dropped. Each service mounts **only its own** private
-key plus the public trust bundle.
+`no-new-privileges`, and all capabilities dropped. Key files under `.secrets/` are `0600`. On each
+`up`, the one-shot `keys-init` container copies every service's key into that service's own
+subdirectory of the `service-keys` volume (owned by the service uid, mode `0400`). Each service
+mounts **only its own** subdirectory, read-only, at `/run/secrets`. Requires Docker Engine 26+
+and Compose 2.30+ (volume `subpath`).
 
 Corporate proxies and private package indexes: images accept optional BuildKit secrets
 (`pip_conf`, `npmrc`, `extra_ca`) and `APT_UPGRADE=false` so no credential enters a layer.

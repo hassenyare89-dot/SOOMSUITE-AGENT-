@@ -24,9 +24,9 @@ jobs:
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with: { python-version: "3.13" }
       - run: pip install -e '.[dev]'
       - name: Upgrade → downgrade → upgrade (reversibility) and drift check
@@ -58,19 +58,25 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
       - name: Assume deploy role (OIDC, short-lived)
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
           role-to-assume: ${{ vars.MIGRATION_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - name: Helm upgrade (migrations run first as a pre-upgrade hook Job)
+        # Expressions go through env, never interpolated into the script (no shell injection).
+        env:
+          EKS_CLUSTER: ${{ vars.EKS_CLUSTER }}
+          REGISTRY_OWNER: ${{ github.repository_owner }}
+          TARGET_ENV: ${{ inputs.environment }}
+          PLATFORM_DOMAIN: ${{ vars.PLATFORM_DOMAIN }}
         run: |
-          aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER }}"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER"
           helm upgrade --install platform infra/kubernetes/helm/samiir-fatma -n platform \
-            --set global.imageRegistry="ghcr.io/${{ github.repository_owner }}/samiir-fatma" \
+            --set global.imageRegistry="ghcr.io/${REGISTRY_OWNER}/samiir-fatma" \
             --set global.imageTag="${GITHUB_SHA}" \
-            --set global.environment="${{ inputs.environment }}" \
-            --set global.domain="${{ vars.PLATFORM_DOMAIN }}" \
+            --set global.environment="${TARGET_ENV}" \
+            --set global.domain="${PLATFORM_DOMAIN}" \
             --atomic --wait --timeout 20m

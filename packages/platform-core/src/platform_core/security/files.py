@@ -43,5 +43,6 @@ def detect_mime(data: bytes) -> str:
 def hashes(data: bytes) -> dict[str, str]:
     # SHA-1/MD5 are for sample identification (threat-intel lookups), never for integrity.
     return {"sha256": hashlib.sha256(data).hexdigest(),
+            # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
             "sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(),
             "md5": hashlib.md5(data, usedforsecurity=False).hexdigest()}

@@ -27,9 +27,9 @@ jobs:
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://postgres:ci-superuser@localhost:5432/platform_test
       TEST_DATABASE_URL: postgresql+asyncpg://platform_owner:ci-owner@localhost:5432/platform_test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with: { python-version: "3.13", cache: pip }
       - name: Install
         run: pip install -e '.[dev]'
@@ -43,7 +43,7 @@ jobs:
           PGPASSWORD=ci-superuser psql -h localhost -U postgres -c "CREATE DATABASE platform_test OWNER platform_owner"
       - name: Unit, integration and security tests
         run: pytest -q --junitxml=pytest.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with: { name: pytest-results, path: pytest.xml }
 
@@ -51,9 +51,9 @@ jobs:
     runs-on: ubuntu-24.04
     defaults: { run: { working-directory: apps/web } }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
@@ -63,21 +63,21 @@ jobs:
   helm:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - run: helm lint infra/kubernetes/helm/samiir-fatma
       - run: helm template t infra/kubernetes/helm/samiir-fatma > /tmp/rendered.yaml
       - name: Policy check (kube-linter)
-        uses: stackrox/kube-linter-action@v1
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1.0.7
         with: { directory: /tmp/rendered.yaml }
 
   terraform:
     runs-on: ubuntu-24.04
     defaults: { run: { working-directory: infra/terraform/aws } }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with: { persist-credentials: false }
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false && terraform validate
