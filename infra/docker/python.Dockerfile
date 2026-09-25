@@ -32,6 +32,11 @@ LABEL org.opencontainers.image.source="https://github.com/hassenyare89-dot/SOOMS
 RUN if [ "$APT_UPGRADE" = "true" ]; then apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*; fi \
  && groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 COPY --from=deps /opt/venv /opt/venv
+# Services never install packages at runtime: drop pip (and the setuptools/msgpack copies it
+# vendors) from both the venv and the base interpreter.
+RUN rm -rf /opt/venv/bin/pip* /opt/venv/lib/python3.13/site-packages/pip* \
+           /usr/local/bin/pip* /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/lib/python3.13/ensurepip
 WORKDIR /app
 COPY --chown=root:root packages/platform-core/src /app/core
 COPY --chown=root:root services/${SERVICE_DIR}/src /app/service
