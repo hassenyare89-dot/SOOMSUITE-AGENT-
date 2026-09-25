@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-pytestmark = [pytest.mark.db, pytest.mark.asyncio(loop_scope="session")]
+pytestmark = pytest.mark.db
 ORIGIN = {"Origin": "http://localhost:3000"}
 
 

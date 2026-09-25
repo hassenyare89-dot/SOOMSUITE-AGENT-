@@ -151,7 +151,7 @@ async def start_platform(stack: AsyncExitStack, tmp: Path, base_db_url: str,
         app.state.runtime = rt
         apps[name] = app
         runtimes[name] = rt
-    for name, rt in runtimes.items():
+    for rt in runtimes.values():
         for aud in rt.extras["_downstream"]:
             if aud in apps:
                 rt.clients[aud] = ServiceClient(aud, f"http://{aud}", rt.identity,

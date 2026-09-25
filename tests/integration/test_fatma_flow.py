@@ -15,7 +15,7 @@ from platform_core.errors import Conflict, Forbidden, Unauthenticated, Validatio
 from platform_core.security.principal import ActorType, Principal, Role
 from security_ingest.webhook_auth import sign
 
-pytestmark = [pytest.mark.db, pytest.mark.asyncio(loop_scope="session")]
+pytestmark = pytest.mark.db
 SECRET = "test-ingest-secret-0123456789"
 
 

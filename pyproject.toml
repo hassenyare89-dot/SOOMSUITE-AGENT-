@@ -85,7 +85,7 @@ select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
 ignore = ["B008", "S311", "UP046", "S105", "ASYNC109"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "S105", "S106", "S108", "E501"]
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S108", "E501"]
 "scripts/**/*.py" = ["S603", "S607"]
 "services/scanner-worker/**/*.py" = ["S603", "ASYNC240", "S108"]
 

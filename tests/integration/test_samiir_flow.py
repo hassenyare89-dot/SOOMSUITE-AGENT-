@@ -7,7 +7,7 @@ import secrets
 import pytest
 from harness import customer
 
-pytestmark = [pytest.mark.db, pytest.mark.asyncio(loop_scope="session")]
+pytestmark = pytest.mark.db
 
 
 async def chat(platform, principal, text, **extra):  # noqa: ANN001

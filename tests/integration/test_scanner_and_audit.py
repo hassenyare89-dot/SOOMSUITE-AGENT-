@@ -12,7 +12,7 @@ from platform_core.audit import AuditEvent
 from platform_core.errors import Conflict, Forbidden
 from platform_core.security.principal import Principal, Role
 
-pytestmark = [pytest.mark.db, pytest.mark.asyncio(loop_scope="session")]
+pytestmark = pytest.mark.db
 
 
 def scan_body(asset_id, **kw):  # noqa: ANN001
