@@ -42,6 +42,11 @@ SERVICES: dict[str, tuple[str, str | None, list[str]]] = {
     "security-ingest": ("security_ingest", "svc_security_ingest", ["fatma-soc"]),
     "scanner-controller": ("scanner_controller", "svc_scanner_controller",
                            ["approvals", "fatma-soc"]),
+    "api-gateway-public": ("api_gateway", None, ["samiir-agent", "whatsapp", "security-ingest"]),
+    "api-gateway-admin": ("api_gateway", "svc_gateway_admin",
+                          ["samiir-agent", "crm", "scheduling", "knowledge", "notifications",
+                           "whatsapp", "fatma-soc", "scanner-controller", "security-ingest",
+                           "approvals", "audit"]),
 }
 
 ALL_NAMES = ["api-gateway-public", "api-gateway-admin", "samiir-agent", "fatma-soc", "crm",
@@ -127,6 +132,10 @@ async def start_platform(stack: AsyncExitStack, tmp: Path, base_db_url: str,
             "redis_url": None,
             "audit_url": None,
         }
+        if name.startswith("api-gateway"):
+            overrides.update(service_name=name, gateway_mode=name.rsplit("-", 1)[1],
+                             cookie_secure=False, dev_login_enabled=name.endswith("admin"),
+                             allowed_origins=["http://localhost:3000"])
         if name == "notifications":
             overrides["run_worker"] = False
         if name == "fatma-soc":

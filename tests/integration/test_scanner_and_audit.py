@@ -141,8 +141,8 @@ async def test_expired_approval_cannot_be_consumed(platform):
         f"/internal/approvals/{req['id']}/decide", principal=eng2, request_id="t",
         json={"decision": "approve", "payload_hash": req["payload_hash"]})
     conn = await asyncpg.connect(ADMIN_URL.replace("+asyncpg", ""))
-    await conn.execute("UPDATE approval_requests SET expires_at = requested_at + interval '1 second'"
-                       " WHERE id = $1", uuid.UUID(req["id"]))
+    await conn.execute("UPDATE approval_requests SET requested_at = now() - interval '2 hours', "
+                       "expires_at = now() - interval '1 hour' WHERE id = $1", uuid.UUID(req["id"]))
     await conn.close()
     with pytest.raises(Conflict):
         await fatma.post(f"/internal/approvals/{req['id']}/consume", principal=system,
