@@ -12,6 +12,21 @@ import * as React from "react";
 const SLOTS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
 const OTHER = "var(--series-other)";
 
+/** Measure the container so SVG text renders at its true size (no viewBox scaling). */
+function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = React.useState(480);
+  React.useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver(([entry]) => {
+      if (entry) setWidth(Math.max(240, Math.round(entry.contentRect.width)));
+    });
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
+
 function niceMax(v: number): number {
   if (v <= 0) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
@@ -43,14 +58,15 @@ export function ColumnChart({ data, height = 160, unit = "events" }: {
   data: Point[]; height?: number; unit?: string;
 }) {
   const [hover, setHover] = React.useState<number | null>(null);
-  const width = 560;
+  const [ref, width] = useWidth();
   const pad = { l: 36, r: 8, t: 8, b: 22 };
   const max = niceMax(Math.max(0, ...data.map((d) => d.value)));
   const bw = data.length ? (width - pad.l - pad.r) / data.length : 0;
   const y = (v: number) => pad.t + (height - pad.t - pad.b) * (1 - v / max);
   if (!data.length) return <p className="py-6 text-center text-sm text-subtle">No data in range.</p>;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full" role="img"
+    <div ref={ref} className="w-full">
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
          aria-label={`Column chart of ${unit}`} onMouseLeave={() => setHover(null)}>
       {[0, 0.5, 1].map((f) => (
         <g key={f}>
@@ -87,6 +103,7 @@ export function ColumnChart({ data, height = 160, unit = "events" }: {
                  lines={[data[hover].label, `${data[hover].value} ${unit}`]} />
       ) : null}
     </svg>
+    </div>
   );
 }
 
@@ -117,7 +134,7 @@ export function StackedColumns({ rows, series, height = 200 }: {
     }
     return { label: r.label, v, total: keys.reduce((a, k) => a + (v[k] ?? 0), 0) };
   });
-  const width = 560;
+  const [ref, width] = useWidth();
   const pad = { l: 36, r: 8, t: 8, b: 22 };
   const max = niceMax(Math.max(0, ...data.map((d) => d.total)));
   const bw = data.length ? (width - pad.l - pad.r) / data.length : 0;
@@ -125,7 +142,7 @@ export function StackedColumns({ rows, series, height = 200 }: {
   const base = height - pad.b;
   if (!rows.length) return <p className="py-6 text-center text-sm text-subtle">No data in range.</p>;
   return (
-    <div>
+    <div ref={ref}>
       <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-muted">
         {keys.map((k, i) => (
           <span key={k} className="inline-flex items-center gap-1">
@@ -146,7 +163,7 @@ export function StackedColumns({ rows, series, height = 200 }: {
           ))}</tbody>
         </table>
       ) : (
-        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full" role="img"
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
              aria-label="Stacked column chart of security events by category"
              onMouseLeave={() => setHover(null)}>
           {[0, 0.5, 1].map((f) => (

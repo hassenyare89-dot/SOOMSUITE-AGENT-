@@ -138,12 +138,13 @@ async def seed(admin_url: str, enc: FieldEncryptor, *, embed=None) -> SeedResult
                         "INSERT INTO knowledge_chunks (tenant_id, document_id, chunk_index, content,"
                         " embedding, embedding_model) VALUES ($1,$2,$3,$4,$5::vector,$6)",
                         tid, doc_id, i, c, str(v), embed.model_name)
-            for code, name, minutes in (("consultation", "Free consultation (30 min)", 30),
-                                        ("security_review", "Security review call (60 min)", 60)):
+            for code, type_name, minutes in (("consultation", "Free consultation (30 min)", 30),
+                                             ("security_review", "Security review call (60 min)",
+                                              60)):
                 await conn.execute(
                     "INSERT INTO appointment_types (tenant_id, code, name, duration_minutes, "
                     "buffer_minutes, calendar_id) VALUES ($1,$2,$3,$4,10,'sales-calendar') "
-                    "ON CONFLICT (tenant_id, code) DO NOTHING", tid, code, name, minutes)
+                    "ON CONFLICT (tenant_id, code) DO NOTHING", tid, code, type_name, minutes)
             target = f"www.{slug}.example"
             aid = await conn.fetchval(
                 "INSERT INTO assets (tenant_id, name, asset_type, canonical_target, criticality, "

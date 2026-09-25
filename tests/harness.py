@@ -131,6 +131,7 @@ async def start_platform(stack: AsyncExitStack, tmp: Path, base_db_url: str,
             "database_url": db_url(base_db_url, role, passwords[role]) if role else None,
             "redis_url": None,
             "audit_url": None,
+            "otel_exporter_otlp_endpoint": None,
         }
         if name.startswith("api-gateway"):
             overrides.update(service_name=name, gateway_mode=name.rsplit("-", 1)[1],

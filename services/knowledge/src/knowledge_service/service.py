@@ -16,6 +16,7 @@ from platform_core.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from platform_core.schemas.common import StrictModel
 from platform_core.schemas.enums import KnowledgeCategory, KnowledgeStatus, Visibility
 from platform_core.schemas.knowledge import (
+    PriceItem,
     PricingAnswer,
     PricingData,
     RetrievedChunk,
@@ -263,8 +264,14 @@ class KnowledgeService:
             data = PricingData.model_validate(d.structured_data)
             if data.valid_until and data.valid_until <= datetime.now(UTC):
                 continue
+            words = [w for w in needle.split() if len(w) > 3]
+
+            def overlap(item: PriceItem, _words: list[str] = words) -> int:
+                return sum(w in item.service.lower() for w in _words)
+
+            best = max((overlap(i) for i in data.items), default=0)
             items = [i for i in data.items if not needle or needle in i.service.lower()
-                     or any(w in i.service.lower() for w in needle.split() if len(w) > 3)]
+                     or (best > 0 and overlap(i) == best)]
             if items:
                 answers.append(PricingAnswer(currency=data.currency, items=items,
                                              document_id=d.id, version=d.version,

@@ -142,20 +142,22 @@ async def windowed_signals(s: AsyncSession, tenant_id: uuid.UUID, asset_ids: set
     now = datetime.now(UTC)
     # --- credential attacks -------------------------------------------------------------
     rows = (await s.execute(text("""
-        SELECT host(src_ip) AS ip, count(*) AS failures, count(DISTINCT user_id) AS users,
+        SELECT host(src_ip) AS ip, asset_id, count(*) AS failures,
+               count(DISTINCT user_id) AS users,
                min("timestamp") AS first_seen, max("timestamp") AS last_seen
         FROM security_events
         WHERE category IN ('credential_attack','auth_anomaly') AND src_ip IS NOT NULL
           AND "timestamp" > now() - interval '10 minutes'
-        GROUP BY src_ip
+        GROUP BY src_ip, asset_id
         HAVING count(*) >= :n OR count(DISTINCT user_id) >= :u
     """), {"n": thresholds["bruteforce_failures_10m"],
            "u": thresholds["stuffing_distinct_users_10m"]})).all()
     for r in rows:
         stuffing = r.users >= thresholds["stuffing_distinct_users_10m"]
-        c = Candidate(correlation_key(tenant_id, None, "credential", _net(r.ip),
+        c = Candidate(correlation_key(tenant_id, r.asset_id, "credential", _net(r.ip),
                                       now.date().isoformat()), "credential_attack",
-                      f"{'Credential stuffing' if stuffing else 'Brute-force'} from {r.ip}", None,
+                      f"{'Credential stuffing' if stuffing else 'Brute-force'} from {r.ip}",
+                      r.asset_id,
                       first_seen=r.first_seen, last_seen=r.last_seen)
         c.sources.add(r.ip)
         c.signals.append(Signal("credential_stuffing" if stuffing else "brute_force",
@@ -254,17 +256,17 @@ async def windowed_signals(s: AsyncSession, tenant_id: uuid.UUID, asset_ids: set
 
     # --- repeat offenders ------------------------------------------------------------
     rows = (await s.execute(text("""
-        SELECT host(src_ip) AS ip, count(DISTINCT category) AS cats, count(*) AS n,
+        SELECT host(src_ip) AS ip, asset_id, count(DISTINCT category) AS cats, count(*) AS n,
                min("timestamp") AS first_seen, max("timestamp") AS last_seen
         FROM security_events
         WHERE src_ip IS NOT NULL AND category NOT IN ('info')
           AND "timestamp" > now() - interval '1 hour'
-        GROUP BY src_ip HAVING count(DISTINCT category) >= :c
+        GROUP BY src_ip, asset_id HAVING count(DISTINCT category) >= :c
     """), {"c": thresholds["repeat_offender_categories_1h"]})).all()
     for r in rows:
-        c = Candidate(correlation_key(tenant_id, None, "web_attack", _net(r.ip),
+        c = Candidate(correlation_key(tenant_id, r.asset_id, "web_attack", _net(r.ip),
                                       now.date().isoformat()), "web_attack",
-                      f"Repeated abuse from {r.ip}", None, first_seen=r.first_seen,
+                      f"Repeated abuse from {r.ip}", r.asset_id, first_seen=r.first_seen,
                       last_seen=r.last_seen)
         c.sources.add(r.ip)
         c.signals.append(Signal("repeat_offender", "web_attack", 6, 0.8,

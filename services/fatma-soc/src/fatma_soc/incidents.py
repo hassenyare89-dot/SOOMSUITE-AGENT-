@@ -98,7 +98,7 @@ class IncidentEngine:
                 analysis={"engine": "deterministic", "sources": sorted(cand.sources)[:50],
                           "success_indicator": cand.succeeded,
                           "confirmation_checklist": confirmation_checklist(cand.category)},
-                summary=_summary(cand, level, score))
+                summary=_summary(cand, level, score, len(cand.sources)))
             s.add(inc)
         else:
             # Risk never auto-decreases on an open incident; humans close or downgrade.
@@ -112,7 +112,7 @@ class IncidentEngine:
                             "sources": sorted(set(inc.analysis.get("sources", [])) | cand.sources)[:50],
                             "success_indicator": inc.analysis.get("success_indicator")
                             or cand.succeeded}
-            inc.summary = _summary(cand, level, inc.risk_score)
+            inc.summary = _summary(cand, level, inc.risk_score, len(inc.analysis["sources"]))
         await s.flush()
         if cand.event_ids:
             await s.execute(insert(IncidentEvent).values([
@@ -197,8 +197,8 @@ class IncidentEngine:
                         .values(risk=RiskClass.NORMAL.value))
 
 
-def _summary(cand: Candidate, level: RiskClass, score: int) -> str:
+def _summary(cand: Candidate, level: RiskClass, score: int, n_sources: int) -> str:
     names = ", ".join(sorted({s.name.removeprefix("event:") for s in cand.signals})[:6])
     return (f"{level.value} ({score}/100) suspected {cand.category.replace('_', ' ')} "
-            f"involving {len(cand.sources) or 'unknown'} source(s). Signals: {names}. "
+            f"involving {n_sources or 'unknown'} source(s). Signals: {names}. "
             f"This is a SUSPECTED incident until a security engineer confirms it with evidence.")

@@ -58,7 +58,9 @@ def create(settings: Settings | None = None) -> FastAPI:
     async def startup(rt: ServiceRuntime) -> None:
         if "engine" not in rt.extras:
             rt.extras["engine"] = IncidentEngine()
-            rt.extras["defense"] = DefenseService(rt.secrets)
+            rt.extras["defense"] = DefenseService(
+                rt.secrets, allow_documentation_ranges=not settings.is_production_like
+                and settings.environment.value in ("development", "test"))
             analyst = DeterministicAnalyst()
             if settings.openai_api_key_ref:
                 try:

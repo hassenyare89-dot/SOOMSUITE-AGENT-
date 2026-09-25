@@ -46,10 +46,17 @@ def action_payload(tenant_id: uuid.UUID, action: WafAction) -> dict[str, Any]:
             "confidence": action.params.get("confidence", 0)}
 
 
-def validate_target(action_type: DefenseActionType, target: str) -> str:
+DOCUMENTATION_NETS = [ipaddress.ip_network(n) for n in
+                      ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32")]
+
+
+def validate_target(action_type: DefenseActionType, target: str, *,
+                    allow_documentation_ranges: bool = False) -> str:
     if action_type in (DefenseActionType.CHALLENGE_IP, DefenseActionType.TEMP_BLOCK_IP):
         net = ipaddress.ip_network(target, strict=False)
-        if not net.is_global:
+        documentation = any(net.subnet_of(d) for d in DOCUMENTATION_NETS  # type: ignore[arg-type]
+                            if d.version == net.version)
+        if not net.is_global and not (allow_documentation_ranges and documentation):
             raise ValidationFailed("refusing to act on a non-public address")
         if net.num_addresses > (256 if net.version == 4 else 2**64):
             raise ValidationFailed("target range too broad")
@@ -172,8 +179,10 @@ class AwsWafProvider:
 
 
 class DefenseService:
-    def __init__(self, secrets: Any) -> None:
+    def __init__(self, secrets: Any, *, allow_documentation_ranges: bool = False) -> None:
         self.secrets = secrets
+        # Development/test only: lets demo data from RFC 5737 ranges flow through the workflow.
+        self.allow_documentation_ranges = allow_documentation_ranges
 
     async def provider(self, s: AsyncSession, name: str) -> DefenseProvider:
         if name == "none":
@@ -200,7 +209,8 @@ class DefenseService:
                         target: str, ttl_seconds: int | None, rationale: str, confidence: float,
                         created_by: str, params: dict[str, Any] | None = None) -> WafAction:
         low = action_type in LOW_RISK_DEFENSE_ACTIONS
-        target = validate_target(action_type, target)
+        target = validate_target(action_type, target,
+                                 allow_documentation_ranges=self.allow_documentation_ranges)
         ttl = ttl_seconds or (900 if low else None)
         if ttl is not None and not 60 <= ttl <= MAX_TTL[low]:
             raise ValidationFailed("ttl outside the allowed range for this action")

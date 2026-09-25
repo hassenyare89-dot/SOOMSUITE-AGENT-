@@ -45,7 +45,7 @@ export async function proxy(request: NextRequest) {
     "base-uri 'self'",
     "form-action 'self'",
     `frame-ancestors ${frameAncestors}`,
-    isDev ? "" : "upgrade-insecure-requests",
+    request.nextUrl.protocol === "https:" ? "upgrade-insecure-requests" : "",
   ].filter(Boolean).join("; ");
 
   const requestHeaders = new Headers(request.headers);
