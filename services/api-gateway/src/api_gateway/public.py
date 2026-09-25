@@ -8,11 +8,19 @@ import time
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Cookie, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import EmailStr, Field
 
-from api_gateway.common import check_csrf, client_ip, csrf_token, runtime, to_response
+from api_gateway.common import (
+    check_csrf,
+    client_ip,
+    cookie_name,
+    csrf_token,
+    read_cookie,
+    runtime,
+    to_response,
+)
 from platform_core.app import ServiceRuntime
 from platform_core.errors import Forbidden, NotFound, RateLimited, ValidationFailed
 from platform_core.schemas.common import StrictModel
@@ -20,7 +28,6 @@ from platform_core.security.principal import ActorType, Principal, Role
 from platform_core.security.ratelimit import Limit, enforce
 
 router = APIRouter()
-WIDGET_COOKIE = "__Host-samiir_ws"
 EDGE = Principal(subject="edge", tenant_id=uuid.UUID(int=0), actor_type=ActorType.SERVICE,
                  roles=frozenset({Role.SYSTEM_SERVICE}))
 
@@ -106,7 +113,7 @@ async def widget_session(body: SessionIn, request: Request, response: Response) 
             "ip_hash": hashlib.sha256(ip.encode()).hexdigest()[:16], "last_text": "",
             "repeat": 0}
     sid = await rt.extras["widget_sessions"].create(data, ttl)
-    response.set_cookie(WIDGET_COOKIE, sid, max_age=ttl, path="/", httponly=True,
+    response.set_cookie(cookie_name(rt, "samiir_ws"), sid, max_age=ttl, path="/", httponly=True,
                         secure=rt.settings.cookie_secure,  # type: ignore[attr-defined]
                         samesite="none" if rt.settings.cookie_secure else "lax")  # type: ignore[attr-defined]
     if rt.settings.cookie_secure:  # type: ignore[attr-defined]
@@ -124,9 +131,9 @@ class WidgetMessage(StrictModel):
 
 
 @router.post("/v1/widget/messages")
-async def widget_message(body: WidgetMessage, request: Request,
-                         sid: Annotated[str | None, Cookie(alias=WIDGET_COOKIE)] = None) -> dict:
+async def widget_message(body: WidgetMessage, request: Request) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "samiir_ws")
     data = await _session(rt, request, sid)
     ip = client_ip(request, rt.settings.trusted_proxy_cidrs)  # type: ignore[attr-defined]
     await _limits(rt, ip, data["tenant_id"], data["ref"])
@@ -150,9 +157,9 @@ async def widget_message(body: WidgetMessage, request: Request,
 
 
 @router.get("/v1/widget/messages")
-async def widget_history(request: Request,
-                         sid: Annotated[str | None, Cookie(alias=WIDGET_COOKIE)] = None) -> dict:
+async def widget_history(request: Request) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "samiir_ws")
     data = await _session(rt, request, sid)
     return await rt.client("samiir-agent").get("/internal/chat/history",
                                                principal=_principal(data, sid or ""),
@@ -170,9 +177,9 @@ class ContactForm(StrictModel):
 
 
 @router.post("/v1/widget/contact")
-async def widget_contact(body: ContactForm, request: Request,
-                         sid: Annotated[str | None, Cookie(alias=WIDGET_COOKIE)] = None) -> dict:
+async def widget_contact(body: ContactForm, request: Request) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "samiir_ws")
     data = await _session(rt, request, sid)
     await _limits(rt, client_ip(request, rt.settings.trusted_proxy_cidrs),  # type: ignore[attr-defined]
                   data["tenant_id"], data["ref"])
@@ -184,9 +191,9 @@ async def widget_contact(body: ContactForm, request: Request,
 
 
 @router.post("/v1/widget/escalate")
-async def widget_escalate(request: Request,
-                          sid: Annotated[str | None, Cookie(alias=WIDGET_COOKIE)] = None) -> dict:
+async def widget_escalate(request: Request) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "samiir_ws")
     data = await _session(rt, request, sid)
     return await rt.client("samiir-agent").post(
         "/internal/chat/escalate", principal=_principal(data, sid or ""), request_id=_rid(request),

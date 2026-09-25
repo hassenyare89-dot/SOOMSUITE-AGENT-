@@ -14,12 +14,21 @@ from typing import Annotated, Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Cookie, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import Field
 from sqlalchemy import delete, func, select, text
 
-from api_gateway.common import check_csrf, check_origin, client_ip, csrf_token, runtime, to_response
+from api_gateway.common import (
+    check_csrf,
+    check_origin,
+    client_ip,
+    cookie_name,
+    csrf_token,
+    read_cookie,
+    runtime,
+    to_response,
+)
 from platform_core.app import ServiceRuntime
 from platform_core.db.models import Integration, RoleRow, Tenant, User, UserRole, WidgetSite
 from platform_core.errors import Conflict, Forbidden, NotFound, Unauthenticated, ValidationFailed
@@ -33,7 +42,6 @@ from platform_core.security.rbac import MFA_REQUIRED, ROLE_PERMISSIONS, P, permi
 from platform_core.security.service_auth import RequestContext
 
 router = APIRouter()
-SESSION_COOKIE = "__Host-admin_session"
 STAFF_ROLES = frozenset(Role) - {Role.ANONYMOUS_CUSTOMER, Role.AUTHENTICATED_CUSTOMER,
                                  Role.SYSTEM_SERVICE}
 SECURITY_SIDE = frozenset({Role.SECURITY_ANALYST, Role.SECURITY_ENGINEER, Role.TENANT_ADMIN,
@@ -83,9 +91,9 @@ def _principal(data: dict[str, Any]) -> Principal:
                      display_name=data.get("name"))
 
 
-async def staff(request: Request,
-                sid: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None) -> Principal:
+async def staff(request: Request) -> Principal:
     rt = runtime(request)
+    sid = read_cookie(request, "admin_session")
     data = await _load_session(rt, sid)
     check_origin(request, rt.settings.allowed_origins)  # type: ignore[attr-defined]
     check_csrf(request, rt.extras["csrf_key"], sid or "")
@@ -117,7 +125,7 @@ async def _create_session(rt: ServiceRuntime, response: Response, *, user_id: uu
     sid = secrets.token_urlsafe(32)
     data["sid_hash"] = hashlib.sha256(sid.encode()).hexdigest()[:24]
     await store.put(sid, data, rt.settings.admin_session_idle_seconds)  # type: ignore[attr-defined]
-    response.set_cookie(SESSION_COOKIE, sid, path="/", httponly=True,
+    response.set_cookie(cookie_name(rt, "admin_session"), sid, path="/", httponly=True,
                         secure=rt.settings.cookie_secure, samesite="strict",  # type: ignore[attr-defined]
                         max_age=rt.settings.admin_session_absolute_seconds)  # type: ignore[attr-defined]
     return sid
@@ -211,19 +219,19 @@ async def _audit_login(rt: ServiceRuntime, request: Request, row: Any, method: s
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, response: Response,
-                 sid: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None) -> dict:
+async def logout(request: Request, response: Response) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "admin_session")
     check_origin(request, rt.settings.allowed_origins)  # type: ignore[attr-defined]
     await rt.extras["admin_sessions"].delete(sid)
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(cookie_name(rt, "admin_session"), path="/")
     return {"ok": True}
 
 
 @router.get("/auth/me")
-async def me(request: Request,
-             sid: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None) -> dict:
+async def me(request: Request) -> dict:
     rt = runtime(request)
+    sid = read_cookie(request, "admin_session")
     data = await _load_session(rt, sid)
     p = _principal(data)
     perms = sorted(permissions_for(p.roles))
@@ -539,7 +547,7 @@ async def security_settings(request: Request, p: StaffDep) -> dict:
     return {"sso": bool(s.oidc_issuer), "mfa_required": s.require_mfa,  # type: ignore[attr-defined]
             "session_idle_seconds": s.admin_session_idle_seconds,  # type: ignore[attr-defined]
             "session_absolute_seconds": s.admin_session_absolute_seconds,  # type: ignore[attr-defined]
-            "cookie": {"name": SESSION_COOKIE, "httponly": True, "secure": s.cookie_secure,  # type: ignore[attr-defined]
+            "cookie": {"name": cookie_name(rt, "admin_session"), "httponly": True, "secure": s.cookie_secure,  # type: ignore[attr-defined]
                        "samesite": "strict"},
             "csrf": "double-submit HMAC token (X-CSRF-Token) + Origin check",
             "rate_limit_per_user_per_minute": s.admin_requests_per_minute,  # type: ignore[attr-defined]

@@ -63,3 +63,13 @@ def to_response(upstream: Any) -> Response:
 
 def runtime(request: Request) -> ServiceRuntime:
     return request.app.state.runtime
+
+
+def cookie_name(rt: ServiceRuntime, base: str) -> str:
+    """``__Host-`` prefix (Secure, Path=/, no Domain) whenever cookies are secure; browsers
+    reject that prefix on plain-HTTP local development."""
+    return f"__Host-{base}" if rt.settings.cookie_secure else base  # type: ignore[attr-defined]
+
+
+def read_cookie(request: Request, base: str) -> str | None:
+    return request.cookies.get(cookie_name(runtime(request), base))

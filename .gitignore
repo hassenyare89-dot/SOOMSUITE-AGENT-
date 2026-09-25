@@ -13,3 +13,6 @@ coverage/
 *.pem
 .mypy_cache/
 node_modules/
+apps/web/.next/
+apps/web/tsconfig.tsbuildinfo
+.run/
