@@ -14,6 +14,8 @@ name: samiir-fatma
 
 x-python: &python
   restart: unless-stopped
+  # Key files under .secrets/ are mode 0640 owned by the host user's group.
+  group_add: ["${SECRETS_GID:?run scripts/bootstrap_dev.py first}"]
   read_only: true
   tmpfs: [/tmp]
   cap_drop: [ALL]
@@ -392,6 +394,7 @@ services:
       QUARANTINE_KEY_FILE: /run/secrets/quarantine_key
       QUARANTINE_PATH: /var/lib/quarantine
     secrets: [quarantine_key]
+    group_add: ["${SECRETS_GID:?run scripts/bootstrap_dev.py first}"]
     volumes: [quarantine:/var/lib/quarantine:ro]
     read_only: true
     tmpfs: ["/tmp:size=256m"]

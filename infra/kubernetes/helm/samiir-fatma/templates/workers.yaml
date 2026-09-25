@@ -25,6 +25,7 @@ spec:
       {{- end }}
       nodeSelector: {{- toYaml $w.nodeSelector | nindent 8 }}
       tolerations: {{- toYaml $w.tolerations | nindent 8 }}
+      affinity: {{- include "sf.antiAffinity" $name | nindent 8 }}
       securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: worker

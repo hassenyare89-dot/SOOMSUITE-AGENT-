@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 import gzip
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*){0,15}")
 
 
 class ObjectStore(Protocol):
@@ -27,12 +30,15 @@ class ObjectStore(Protocol):
 class FilesystemObjectStore:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._root_real = os.path.realpath(root)
 
     def _path(self, key: str) -> Path:
-        path = (self.root / key).resolve()
-        if not str(path).startswith(str(self.root.resolve())):
+        if not _KEY.fullmatch(key) or ".." in key.split("/"):
             raise ValueError("invalid object key")
-        return path
+        full = os.path.normpath(os.path.join(self._root_real, key))
+        if not full.startswith(self._root_real + os.sep):
+            raise ValueError("invalid object key")
+        return Path(full)
 
     async def put(self, key: str, data: bytes) -> str:
         path = self._path(key)

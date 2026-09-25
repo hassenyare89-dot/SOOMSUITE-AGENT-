@@ -16,7 +16,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 # Zero-width, bidi-override and other invisible characters used to smuggle instructions.
-_INVISIBLE = re.compile(r"[​-‏‪-‮⁠-⁤⁦-⁩﻿­]")
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TAG_CHARS = re.compile(r"[\U000e0000-\U000e007f]")
 

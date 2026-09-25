@@ -59,6 +59,10 @@ def db_url(base: str, role: str, password: str) -> str:
     return f"postgresql+asyncpg://{role}:{password}@{rest}"
 
 
+# Generated per test run so no credential-shaped literal lives in the repository.
+INGEST_TEST_SECRET = secrets.token_urlsafe(24)
+
+
 @dataclass
 class Platform:
     apps: dict[str, Any]
@@ -113,7 +117,7 @@ async def start_platform(stack: AsyncExitStack, tmp: Path, base_db_url: str,
         "META_APP_SECRET": "test-meta-app-secret",
         "META_VERIFY_TOKEN": "test-verify-token",
         "WA_TOKEN_ACME": "test-wa-token",
-        "INGEST_DEMO_SECRET": "test-ingest-secret-0123456789",
+        "INGEST_DEMO_SECRET": INGEST_TEST_SECRET,
         **(extra_env or {}),
     }
     os.environ.update(env)

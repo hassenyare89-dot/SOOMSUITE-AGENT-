@@ -9,6 +9,9 @@ Revises: 0001_core_schema
 Create Date: 2026-09-24
 """
 
+import re
+
+import sqlalchemy as sa
 from alembic import op
 
 from platform_core.db.sqlscript import execute_script
@@ -25,6 +28,8 @@ SERVICE_ROLES = [
     "svc_notifications", "svc_whatsapp", "svc_fatma", "svc_security_ingest",
     "svc_scanner_controller", "svc_approvals", "svc_audit",
 ]
+# Role names are interpolated into DDL (identifiers cannot be bound), so pin their shape.
+assert all(re.fullmatch(r"svc_[a-z_]+", r) for r in SERVICE_ROLES)  # noqa: S101
 
 R, RW, RWD, RI = "SELECT", "SELECT, INSERT, UPDATE", "SELECT, INSERT, UPDATE, DELETE", "SELECT, INSERT"
 
@@ -163,7 +168,8 @@ def upgrade() -> None:
     op.execute("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC")
     for role in [*SERVICE_ROLES, "app_lookup"]:
         op.execute(
-            f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
+            # Identifiers cannot be bound parameters; role names are module constants.
+            f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "  # nosec B608
             f"THEN CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS; "
             f"END IF; END $$"
         )
@@ -201,16 +207,18 @@ def upgrade() -> None:
             op.execute(f"GRANT EXECUTE ON FUNCTION {fn} TO {role}")
 
     # Seed the RBAC catalog from the code-reviewed mapping.
+    bind = op.get_bind()
     for perm in P:
-        op.execute(f"INSERT INTO permissions (name) VALUES ('{perm.value}') ON CONFLICT DO NOTHING")
+        bind.execute(sa.text("INSERT INTO permissions (name) VALUES (:p) ON CONFLICT DO NOTHING"),
+                     {"p": perm.value})
     for role, perms in ROLE_PERMISSIONS.items():
-        op.execute(f"INSERT INTO roles (name) VALUES ('{role.value}') ON CONFLICT DO NOTHING")
+        bind.execute(sa.text("INSERT INTO roles (name) VALUES (:r) ON CONFLICT DO NOTHING"),
+                     {"r": role.value})
         for perm in perms:
-            op.execute(
+            bind.execute(sa.text(
                 "INSERT INTO role_permissions (role_id, permission_id) "
-                f"SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = '{role.value}' "
-                f"AND p.name = '{perm.value}' ON CONFLICT DO NOTHING"
-            )
+                "SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = :r AND p.name = :p "
+                "ON CONFLICT DO NOTHING"), {"r": role.value, "p": perm.value})
 
 
 def downgrade() -> None:
@@ -225,6 +233,6 @@ def downgrade() -> None:
     op.execute("DELETE FROM roles")
     op.execute("DELETE FROM permissions")
     for role in [*SERVICE_ROLES, "app_lookup"]:
-        op.execute(f"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN "
+        op.execute(f"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN "  # nosec B608
                    f"EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}'; "
                    f"EXECUTE 'REVOKE ALL ON SCHEMA public FROM {role}'; END IF; END $$")

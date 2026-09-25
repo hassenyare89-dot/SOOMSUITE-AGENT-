@@ -9,14 +9,14 @@ import time
 from datetime import UTC, datetime
 
 import pytest
-from harness import user
+from harness import INGEST_TEST_SECRET, user
 
 from platform_core.errors import Conflict, Forbidden, Unauthenticated, ValidationFailed
 from platform_core.security.principal import ActorType, Principal, Role
 from security_ingest.webhook_auth import sign
 
 pytestmark = pytest.mark.db
-SECRET = "test-ingest-secret-0123456789"
+SECRET = INGEST_TEST_SECRET
 
 
 def edge(platform):  # noqa: ANN001

@@ -67,6 +67,8 @@ def main() -> None:
             elif "PASSWORD" in key or key in ("META_APP_SECRET", "META_VERIFY_TOKEN",
                                               "INGEST_DEMO_SECRET"):
                 value = secrets.token_urlsafe(24)
+        if key == "SECRETS_GID":
+            value = str(os.getgid())  # always the invoking user's group (see compose group_add)
         if value.startswith("{"):
             value = "'" + value + "'"
         out.append(f"{key}={value}")
@@ -81,20 +83,20 @@ def main() -> None:
     for svc in SERVICES:
         pem_path = keys / f"{svc}.pem"
         if pem_path.exists():
-            os.chmod(pem_path, 0o644)
+            os.chmod(pem_path, 0o640)
         if args.rotate_keys or not pem_path.exists() or svc not in bundle:
             pem, pub = generate_keypair()
             pem_path.write_bytes(pem)
-            # Compose file-secrets are bind mounts that keep host permissions; the files must
-            # be readable by the non-root container user. The enclosing .secrets/ directory
-            # stays 0700, so other host users still cannot reach them.
-            os.chmod(pem_path, 0o644)
+            # Compose file-secrets are bind mounts that keep host ownership and mode. Keys are
+            # owner+group readable only; containers join SECRETS_GID via `group_add`, so the
+            # non-root service user (uid 10001) can read its own key and nobody else can.
+            os.chmod(pem_path, 0o640)
             bundle[svc] = pub
     bundle_path.write_text(json.dumps({"keys": bundle}, indent=2))
     qk = ROOT / ".secrets" / "quarantine.key"
     quarantine = next(line.split("=", 1)[1] for line in out if line.startswith("QUARANTINE_KEY="))
     qk.write_text(quarantine)
-    os.chmod(qk, 0o644)
+    os.chmod(qk, 0o640)
     print(f"wrote {env_path} and {len(SERVICES)} service identities under {keys}")
 
 

@@ -15,13 +15,17 @@ HOP_HEADERS = {"content-length", "transfer-encoding", "connection", "keep-alive"
                "date", "x-service-token"}
 
 
+# Placeholder address for an unidentifiable peer (a rate-limit key, never a bind address).
+UNKNOWN_PEER = "0.0.0.0"  # noqa: S104  # nosec B104
+
+
 def client_ip(request: Request, trusted: list[str]) -> str:
     """Only honour X-Forwarded-For when the direct peer is a trusted proxy."""
-    peer = request.client.host if request.client else "0.0.0.0"  # noqa: S104
+    peer = request.client.host if request.client else UNKNOWN_PEER
     try:
         peer_addr = ipaddress.ip_address(peer)
     except ValueError:
-        return "0.0.0.0"  # noqa: S104
+        return UNKNOWN_PEER
     if any(peer_addr in ipaddress.ip_network(c) for c in trusted):
         xff = request.headers.get("x-forwarded-for", "")
         for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):

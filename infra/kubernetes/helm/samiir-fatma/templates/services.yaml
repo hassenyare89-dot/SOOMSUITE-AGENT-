@@ -30,6 +30,7 @@ spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
       securityContext: {{- toYaml $.Values.podSecurity | nindent 8 }}
+      affinity: {{- include "sf.antiAffinity" $name | nindent 8 }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -94,6 +95,8 @@ kind: PodDisruptionBudget
 metadata: { name: {{ $name }} }
 spec:
   minAvailable: 1
+  # Let evictions proceed for pods that never became ready (they serve no traffic).
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector: { matchLabels: { app: {{ $name }} } }
 ---
 apiVersion: autoscaling/v2

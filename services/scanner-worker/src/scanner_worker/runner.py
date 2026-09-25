@@ -16,7 +16,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-SAFE_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8"}
+SAFE_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
 
 
 @dataclass
@@ -30,7 +30,7 @@ async def run(argv: list[str], *, cwd: str, timeout: float,
               heartbeat: Callable[[str], Awaitable[None] | None] | None = None,
               max_output: int = 1_000_000) -> ProcessResult:
     proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=cwd, env=SAFE_ENV, stdout=asyncio.subprocess.PIPE,
+        *argv, cwd=cwd, env={**SAFE_ENV, "HOME": cwd},  # per-run private HOME stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT, start_new_session=True)
     buf = bytearray()
 

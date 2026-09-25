@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import ssl
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,17 @@ from platform_core.security.service_auth import RequestContext, ServiceIdentity
 
 SERVICE_TOKEN_HEADER = "X-Service-Token"  # noqa: S105 - header name
 REQUEST_ID_HEADER = "X-Request-ID"
+# Downstream paths are always origin-relative: no scheme, no authority ("//host"), no dot
+# segments and no percent-escapes, so a caller-influenced path can never redirect a request
+# to another host or escape the target service's route prefix.
+_SEGMENT = r"[A-Za-z0-9._~!$&'()*+,;=:@-]+"
+_SAFE_PATH = re.compile(rf"/(?:{_SEGMENT}(?:/{_SEGMENT})*/?)?")
+
+
+def safe_path(path: str) -> str:
+    if not _SAFE_PATH.fullmatch(path) or any(seg in {".", ".."} for seg in path.split("/")):
+        raise ValidationFailed("invalid downstream path")
+    return path
 
 _STATUS_ERRORS: dict[int, type[PlatformError]] = {
     401: Unauthenticated, 403: Forbidden, 404: NotFound, 409: Conflict, 422: ValidationFailed,
@@ -94,7 +106,7 @@ class ServiceClient:
         for attempt in range(attempts):
             try:
                 resp = await self._client.request(
-                    method, path, json=json, params=params, content=content,
+                    method, safe_path(path), json=json, params=params, content=content,
                     headers=self._headers(principal, request_id,
                                           ctx.source_ip if ctx else None, agent_run_id, headers),
                 )

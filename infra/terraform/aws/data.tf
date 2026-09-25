@@ -86,18 +86,17 @@ resource "aws_s3_bucket" "logs" {
   bucket = "samiir-fatma-${var.environment}-logs"
 }
 
-resource "aws_s3_bucket_public_access_block" "all" {
-  for_each                = { raw = aws_s3_bucket.raw_events.id, q = aws_s3_bucket.quarantine.id, l = aws_s3_bucket.logs.id }
-  bucket                  = each.value
+# Written out per bucket (not for_each) so policy scanners can link each control to its bucket.
+resource "aws_s3_bucket_public_access_block" "raw_events" {
+  bucket                  = aws_s3_bucket.raw_events.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "all" {
-  for_each = { raw = aws_s3_bucket.raw_events.id, q = aws_s3_bucket.quarantine.id, l = aws_s3_bucket.logs.id }
-  bucket   = each.value
+resource "aws_s3_bucket_server_side_encryption_configuration" "raw_events" {
+  bucket = aws_s3_bucket.raw_events.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
@@ -105,6 +104,74 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "all" {
     }
     bucket_key_enabled = true
   }
+}
+
+moved {
+  from = aws_s3_bucket_public_access_block.all["raw"]
+  to   = aws_s3_bucket_public_access_block.raw_events
+}
+
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.all["raw"]
+  to   = aws_s3_bucket_server_side_encryption_configuration.raw_events
+}
+
+resource "aws_s3_bucket_public_access_block" "quarantine" {
+  bucket                  = aws_s3_bucket.quarantine.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "quarantine" {
+  bucket = aws_s3_bucket.quarantine.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.platform.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+moved {
+  from = aws_s3_bucket_public_access_block.all["q"]
+  to   = aws_s3_bucket_public_access_block.quarantine
+}
+
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.all["q"]
+  to   = aws_s3_bucket_server_side_encryption_configuration.quarantine
+}
+
+resource "aws_s3_bucket_public_access_block" "logs" {
+  bucket                  = aws_s3_bucket.logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.platform.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+moved {
+  from = aws_s3_bucket_public_access_block.all["l"]
+  to   = aws_s3_bucket_public_access_block.logs
+}
+
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.all["l"]
+  to   = aws_s3_bucket_server_side_encryption_configuration.logs
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "raw" {
