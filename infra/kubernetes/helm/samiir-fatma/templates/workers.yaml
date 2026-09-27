@@ -1,0 +1,81 @@
+{{- range $name, $w := .Values.workers }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: {{ $name }} }
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: { app: {{ $name }}, platform.side: fatma-worker }
+spec:
+  replicas: {{ $w.replicas }}
+  selector: { matchLabels: { app: {{ $name }} } }
+  template:
+    metadata:
+      labels: { app: {{ $name }}, platform.side: fatma-worker }
+      annotations: { sidecar.istio.io/inject: "false" }
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- if $w.runtimeClassName }}
+      runtimeClassName: {{ $w.runtimeClassName }}
+      {{- end }}
+      nodeSelector: {{- toYaml $w.nodeSelector | nindent 8 }}
+      tolerations: {{- toYaml $w.tolerations | nindent 8 }}
+      affinity: {{- include "sf.antiAffinity" $name | nindent 8 }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: worker
+          image: "{{ $.Values.global.imageRegistry }}/{{ $w.image }}:{{ $.Values.global.imageTag }}"
+          env:
+            - { name: WORKER_ROLE, value: {{ $w.role }} }
+            - { name: TEMPORAL_ADDRESS, value: {{ $.Values.global.temporalAddress | quote }} }
+            {{- if eq $w.role "malware" }}
+            - { name: QUARANTINE_KEY_FILE, value: /var/run/quarantine/key }
+            - { name: CLAMD_HOST, value: clamav }
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml $w.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if eq $w.role "malware" }}
+            - { name: quarantine-key, mountPath: /var/run/quarantine, readOnly: true }
+            - { name: quarantine, mountPath: /var/lib/quarantine, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 512Mi } }
+        {{- if eq $w.role "malware" }}
+        - { name: quarantine-key, secret: { secretName: quarantine-key, defaultMode: 0400 } }
+        - { name: quarantine, persistentVolumeClaim: { claimName: quarantine, readOnly: true } }
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: {{ $name }} }
+spec:
+  podSelector: { matchLabels: { app: {{ $name }} } }
+  policyTypes: [Ingress, Egress]
+  ingress: []          # workers accept no inbound connections at all
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: temporal } } }]
+      ports: [{ port: 7233, protocol: TCP }]
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }]
+    {{- if eq $w.role "scanner" }}
+    # Public internet only: private, link-local (cloud metadata) and cluster ranges denied.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{- toYaml $.Values.denyEgressCIDRs | nindent 14 }}
+      ports: [{ port: 443, protocol: TCP }, { port: 80, protocol: TCP }]
+    {{- else }}
+    - to: [{ podSelector: { matchLabels: { app: clamav } } }]
+      ports: [{ port: 3310, protocol: TCP }]
+    {{- end }}
+{{- end }}

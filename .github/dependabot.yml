@@ -1,0 +1,17 @@
+# Actions are pinned to commit SHAs; Dependabot keeps the pins (and their version comments) current.
+# Cooldown: wait 7 days after a release before proposing it (lets malicious/broken versions surface).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups: { actions: { patterns: ["*"] } }
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }

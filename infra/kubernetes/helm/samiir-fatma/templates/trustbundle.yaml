@@ -1,0 +1,7 @@
+# Public keys only (safe to store in a ConfigMap). Rotate by publishing the new key here
+# first, then switching the service's private key secret.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: service-trust-bundle }
+data:
+  trust.json: {{ dict "keys" .Values.trustBundle | toJson | quote }}

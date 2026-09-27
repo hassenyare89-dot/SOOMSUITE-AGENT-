@@ -1,39 +1,459 @@
+# SAMIIR + FATMA — local development stack.
+#
+#   python scripts/bootstrap_dev.py        # generates .env + per-service keys (git-ignored)
+#   docker compose up --build              # web: http://localhost:3000
+#   docker compose --profile scanners up   # + Temporal scanner & malware workers, ClamAV
+#
+# Network segmentation mirrors production NetworkPolicies:
+#   * samiir_net / fatma_net are separate internal networks; SAMIIR-side services are never
+#     attached to fatma_net and vice versa. Only the admin gateway, notifications and the
+#     audit service bridge both (each enforces caller ACLs per route).
+#   * The public gateway reaches FATMA-side only via ingest_net (security-ingest webhooks).
+#   * Data stores sit on per-side data networks; egress networks are per service group.
 name: samiir-fatma
+
+x-python: &python
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  depends_on:
+    keys-init: { condition: service_completed_successfully }
+    migrate: { condition: service_completed_successfully }
+    redis: { condition: service_healthy }
+
+x-env: &env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SERVICE_TRUST_BUNDLE_PATH: /run/secrets/trust_bundle
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  AUDIT_URL: http://audit:8000
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+
 services:
-  gateway:
-    build: .
-    env_file: .env
-    ports: ["8000:8000"]
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
-    networks: [public, samiir, control]
+  # ------------------------------------------------------------------ data & infra
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?run scripts/bootstrap_dev.py}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD}
+      TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/10-init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, timeout: 3s, retries: 20 }
+    networks: [samiir_data, fatma_data]
+
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?run scripts/bootstrap_dev.py}",
+              "--appendonly", "yes", "--rename-command", "FLUSHALL", ""]
+    healthcheck: { test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"], interval: 5s, retries: 20 }
+    environment: { REDIS_PASSWORD: "${REDIS_PASSWORD}" }
+    volumes: [redis-data:/data]
+    networks: [samiir_data, fatma_data, edge_cache]
+
+  # Distributes per-service identities. Host key files stay 0600 (owner only); this one-shot
+  # container copies each service's key + the public trust bundle into its own subdirectory of
+  # the service-keys volume, owned by that service's uid with mode 0400. Each service mounts
+  # only its own subdirectory, read-only, at /run/secrets. Re-runs on every `up` (rotation).
+  keys-init:
+    image: busybox:1.37
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./.secrets:/src:ro
+      - service-keys:/keys
+    command:
+      - sh
+      - -euc
+      - |
+        install_key() {  # <dir> <source file> <target name> <uid>
+          mkdir -p "/keys/$$1" && cp "$$2" "/keys/$$1/$$3" && chown "$$4:$$4" "/keys/$$1/$$3" && chmod 0400 "/keys/$$1/$$3"
+        }
+        for svc in api-gateway-public api-gateway-admin samiir-agent crm scheduling knowledge \
+                   whatsapp notifications fatma-soc security-ingest scanner-controller approvals audit; do
+          install_key "$$svc" "/src/service-keys/$$svc.pem" key 10001
+          install_key "$$svc" /src/service-keys/trust.json trust_bundle 10001
+          chmod 0444 "/keys/$$svc/trust_bundle"
+        done
+        install_key malware-worker /src/quarantine.key quarantine_key 1000
+        echo "service keys installed"
+
+  migrate:
+    build: { context: ., dockerfile: infra/docker/migrate.Dockerfile }
+    depends_on: { postgres: { condition: service_healthy } }
+    environment:
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://platform_owner:${DB_OWNER_PASSWORD}@postgres:5432/${POSTGRES_DB:-platform}
+      ADMIN_DATABASE_URL: postgresql://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/${POSTGRES_DB:-platform}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DB_PASSWORD_SVC_GATEWAY_ADMIN: ${DB_PASSWORD_SVC_GATEWAY_ADMIN}
+      DB_PASSWORD_SVC_SAMIIR: ${DB_PASSWORD_SVC_SAMIIR}
+      DB_PASSWORD_SVC_CRM: ${DB_PASSWORD_SVC_CRM}
+      DB_PASSWORD_SVC_SCHEDULING: ${DB_PASSWORD_SVC_SCHEDULING}
+      DB_PASSWORD_SVC_KNOWLEDGE: ${DB_PASSWORD_SVC_KNOWLEDGE}
+      DB_PASSWORD_SVC_NOTIFICATIONS: ${DB_PASSWORD_SVC_NOTIFICATIONS}
+      DB_PASSWORD_SVC_WHATSAPP: ${DB_PASSWORD_SVC_WHATSAPP}
+      DB_PASSWORD_SVC_FATMA: ${DB_PASSWORD_SVC_FATMA}
+      DB_PASSWORD_SVC_SECURITY_INGEST: ${DB_PASSWORD_SVC_SECURITY_INGEST}
+      DB_PASSWORD_SVC_SCANNER_CONTROLLER: ${DB_PASSWORD_SVC_SCANNER_CONTROLLER}
+      DB_PASSWORD_SVC_APPROVALS: ${DB_PASSWORD_SVC_APPROVALS}
+      DB_PASSWORD_SVC_AUDIT: ${DB_PASSWORD_SVC_AUDIT}
+      FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+      SEED_DEMO: "true"
+    command: ["sh", "-c", "python -m alembic -c packages/database/alembic.ini upgrade head && python scripts/provision_db_users.py && python scripts/seed_demo.py"]
+    networks: [fatma_data]
+
+  temporal:
+    image: temporalio/temporal:1.4.1
+    profiles: [scanners]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db", "--ui-port", "8233"]
+    volumes: [temporal-data:/data]
+    ports: ["127.0.0.1:8233:8233"]
+    networks: [temporal_net]
+
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: [scanners]
+    networks: [malware_net, clamav_updates]
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [notify_egress]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: [./infra/docker/otel/collector.yaml:/etc/otelcol/config.yaml:ro]
+    networks: [samiir_net, fatma_net]
+
+  # ---------------------------------------------------------------------- edge
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        ADMIN_GATEWAY_URL: http://api-gateway-admin:8000
+        PUBLIC_GATEWAY_URL: http://api-gateway-public:8000
+        NEXT_PUBLIC_DEV_LOGIN: ${NEXT_PUBLIC_DEV_LOGIN:-false}
+    environment:
+      ADMIN_GATEWAY_URL: http://api-gateway-admin:8000
+      PUBLIC_GATEWAY_URL: http://api-gateway-public:8000
+    ports: ["127.0.0.1:3000:3000"]
     read_only: true
     tmpfs: [/tmp]
-  postgres:
-    image: pgvector/pgvector:pg17
-    environment: {POSTGRES_DB: platform, POSTGRES_USER: platform, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"}
-    volumes: [postgres-data:/var/lib/postgresql/data]
-    healthcheck: {test: ["CMD-SHELL", "pg_isready -U platform"], interval: 5s, timeout: 3s, retries: 10}
-    networks: [samiir, fatma, control]
-  redis:
-    image: redis:8-alpine
-    command: ["redis-server","--requirepass","${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
-    healthcheck: {test: ["CMD","redis-cli","ping"], interval: 5s, timeout: 3s, retries: 10}
-    networks: [samiir, fatma, control]
-  temporal:
-    image: temporalio/auto-setup:1.28
-    environment: {DB: postgresql, DB_PORT: 5432, POSTGRES_USER: platform, POSTGRES_PWD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}", POSTGRES_SEEDS: postgres}
-    depends_on: [postgres]
-    networks: [control]
+    networks: [edge]
+
+  api-gateway-public:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: api-gateway, APP: "api_gateway.main:create_public" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: api-gateway-public
+      GATEWAY_MODE: public
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      SAMIIR_URL: http://samiir-agent:8000
+      WHATSAPP_URL: http://whatsapp:8000
+      SECURITY_INGEST_URL: http://security-ingest:8000
+      CSRF_KEY: ${CSRF_KEY}
+      COOKIE_SECURE: "false"
+      ALLOWED_ORIGINS: '["${WEB_ORIGIN:-http://localhost:3000}"]'
+      TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: api-gateway-public } }]
+    ports: ["127.0.0.1:8000:8000"]
+    # Redis only (sessions/rate limits) — no route to PostgreSQL from the internet edge.
+    networks: [edge, samiir_net, ingest_net, edge_cache]
+
+  api-gateway-admin:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: api-gateway, APP: "api_gateway.main:create_admin" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: api-gateway-admin
+      GATEWAY_MODE: admin
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_gateway_admin:${DB_PASSWORD_SVC_GATEWAY_ADMIN}@postgres:5432/${POSTGRES_DB:-platform}
+      SAMIIR_URL: http://samiir-agent:8000
+      CRM_URL: http://crm:8000
+      SCHEDULING_URL: http://scheduling:8000
+      KNOWLEDGE_URL: http://knowledge:8000
+      NOTIFICATIONS_URL: http://notifications:8000
+      WHATSAPP_URL: http://whatsapp:8000
+      FATMA_URL: http://fatma-soc:8000
+      SCANNER_CONTROLLER_URL: http://scanner-controller:8000
+      SECURITY_INGEST_URL: http://security-ingest:8000
+      APPROVALS_URL: http://approvals:8000
+      AUDIT_READ_URL: http://audit:8000
+      CSRF_KEY: ${CSRF_KEY}
+      FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+      COOKIE_SECURE: "false"
+      ALLOWED_ORIGINS: '["${WEB_ORIGIN:-http://localhost:3000}"]'
+      TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
+      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET_REF: env://OIDC_CLIENT_SECRET
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_AUTHORIZE_URL: ${OIDC_AUTHORIZE_URL}
+      OIDC_TOKEN_URL: ${OIDC_TOKEN_URL}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI}
+      POST_LOGIN_REDIRECT: ${WEB_ORIGIN:-http://localhost:3000}/
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: api-gateway-admin } }]
+    ports: ["127.0.0.1:8001:8000"]
+    networks: [edge, samiir_net, fatma_net, fatma_data]
+
+  # -------------------------------------------------------------------- SAMIIR side
+  samiir-agent:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: samiir-agent, EXTRAS: agents, APP: "samiir_agent.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: samiir-agent
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_samiir:${DB_PASSWORD_SVC_SAMIIR}@postgres:5432/${POSTGRES_DB:-platform}
+      KNOWLEDGE_URL: http://knowledge:8000
+      CRM_URL: http://crm:8000
+      SCHEDULING_URL: http://scheduling:8000
+      NOTIFICATIONS_URL: http://notifications:8000
+      WHATSAPP_URL: http://whatsapp:8000
+      FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+      SAMIIR_OPENAI_API_KEY: ${SAMIIR_OPENAI_API_KEY}
+      OPENAI_MODEL: ${SAMIIR_OPENAI_MODEL:-gpt-5.4-mini}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: samiir-agent } }]
+    networks: [samiir_net, samiir_data, samiir_egress]
+
+  crm:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: crm, APP: "crm_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: crm
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_crm:${DB_PASSWORD_SVC_CRM}@postgres:5432/${POSTGRES_DB:-platform}
+      FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: crm } }]
+    networks: [samiir_net, samiir_data]
+
+  scheduling:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: scheduling, APP: "scheduling_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: scheduling
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_scheduling:${DB_PASSWORD_SVC_SCHEDULING}@postgres:5432/${POSTGRES_DB:-platform}
+      CRM_URL: http://crm:8000
+      NOTIFICATIONS_URL: http://notifications:8000
+      SLOT_TOKEN_KEY: ${SLOT_TOKEN_KEY}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: scheduling } }]
+    networks: [samiir_net, samiir_data, samiir_egress]
+
+  knowledge:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: knowledge, APP: "knowledge_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: knowledge
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_knowledge:${DB_PASSWORD_SVC_KNOWLEDGE}@postgres:5432/${POSTGRES_DB:-platform}
+      OPENAI_API_KEY: ${SAMIIR_OPENAI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: knowledge } }]
+    networks: [samiir_net, samiir_data, samiir_egress]
+
+  whatsapp:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: whatsapp, APP: "whatsapp_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: whatsapp
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_whatsapp:${DB_PASSWORD_SVC_WHATSAPP}@postgres:5432/${POSTGRES_DB:-platform}
+      SAMIIR_URL: http://samiir-agent:8000
+      NOTIFICATIONS_URL: http://notifications:8000
+      META_APP_SECRET: ${META_APP_SECRET}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: whatsapp } }]
+    networks: [samiir_net, samiir_data, samiir_egress]
+
+  notifications:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: notifications, EXTRAS: email, APP: "notifications_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: notifications
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_notifications:${DB_PASSWORD_SVC_NOTIFICATIONS}@postgres:5432/${POSTGRES_DB:-platform}
+      CRM_URL: http://crm:8000
+      WHATSAPP_URL: http://whatsapp:8000
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      EMAIL_FROM: ${EMAIL_FROM}
+      FIELD_ENCRYPTION_KEYRING: ${FIELD_ENCRYPTION_KEYRING}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: notifications } }]
+    networks: [samiir_net, fatma_net, samiir_data, notify_egress]
+
+  # --------------------------------------------------------------------- FATMA side
+  fatma-soc:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: fatma-soc, EXTRAS: agents, APP: "fatma_soc.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: fatma-soc
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_fatma:${DB_PASSWORD_SVC_FATMA}@postgres:5432/${POSTGRES_DB:-platform}
+      APPROVALS_URL: http://approvals:8000
+      NOTIFICATIONS_URL: http://notifications:8000
+      FATMA_OPENAI_API_KEY: ${FATMA_OPENAI_API_KEY}
+      OPENAI_MODEL: ${FATMA_OPENAI_MODEL:-gpt-5.5}
+      CONSOLE_BASE_URL: ${WEB_ORIGIN:-http://localhost:3000}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: fatma-soc } }]
+    networks: [fatma_net, fatma_data, fatma_egress]
+
+  security-ingest:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: security-ingest, EXTRAS: temporal, APP: "security_ingest.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: security-ingest
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_security_ingest:${DB_PASSWORD_SVC_SECURITY_INGEST}@postgres:5432/${POSTGRES_DB:-platform}
+      FATMA_URL: http://fatma-soc:8000
+      QUARANTINE_KEY: ${QUARANTINE_KEY}
+      PSEUDONYM_KEY: ${PSEUDONYM_KEY}
+      INGEST_DEMO_SECRET: ${INGEST_DEMO_SECRET}
+      RAW_STORE_PATH: /var/lib/security-ingest/raw
+      QUARANTINE_PATH: /var/lib/quarantine
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-}
+    volumes: [raw-events:/var/lib/security-ingest/raw, quarantine:/var/lib/quarantine, { type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: security-ingest } }]
+    networks: [fatma_net, ingest_net, fatma_data, temporal_net]
+
+  scanner-controller:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: scanner-controller, EXTRAS: "temporal,dns", APP: "scanner_controller.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: scanner-controller
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_scanner_controller:${DB_PASSWORD_SVC_SCANNER_CONTROLLER}@postgres:5432/${POSTGRES_DB:-platform}
+      APPROVALS_URL: http://approvals:8000
+      FATMA_URL: http://fatma-soc:8000
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: scanner-controller } }]
+    networks: [fatma_net, fatma_data, temporal_net, fatma_egress]
+
+  approvals:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: approvals, APP: "approval_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: approvals
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_approvals:${DB_PASSWORD_SVC_APPROVALS}@postgres:5432/${POSTGRES_DB:-platform}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: approvals } }]
+    networks: [fatma_net, fatma_data]
+
+  audit:
+    <<: *python
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile,
+             args: { SERVICE_DIR: audit, APP: "audit_service.main:create" } }
+    environment:
+      <<: *env
+      SERVICE_NAME: audit
+      AUDIT_URL: ""
+      SERVICE_PRIVATE_KEY_PATH: /run/secrets/key
+      DATABASE_URL: postgresql+asyncpg://svc_audit:${DB_PASSWORD_SVC_AUDIT}@postgres:5432/${POSTGRES_DB:-platform}
+      SIEM_WEBHOOK_URL: ${SIEM_WEBHOOK_URL:-}
+    volumes: [{ type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: audit } }]
+    networks: [samiir_net, fatma_net, fatma_data]
+
+  # ------------------------------------------------------- isolated workers (profile)
   scanner-worker:
-    build: .
-    command: ["python","-m","app.workers.scanner"]
-    profiles: [scanner]
-    networks: [fatma, control]
+    profiles: [scanners]
+    build: { context: ., dockerfile: infra/docker/scanner-worker.Dockerfile }
+    environment:
+      WORKER_ROLE: scanner
+      TEMPORAL_ADDRESS: temporal:7233
+      SCANNER_MAX_CONCURRENT: "2"
+    read_only: true
+    tmpfs: ["/tmp:size=512m"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 256
+    # No database, no platform secrets. Egress only via scan_egress (internet targets).
+    networks: [temporal_net, scan_egress]
+
+  malware-worker:
+    profiles: [scanners]
+    build: { context: ., dockerfile: infra/docker/scanner-worker.Dockerfile }
+    environment:
+      WORKER_ROLE: malware
+      TEMPORAL_ADDRESS: temporal:7233
+      CLAMD_HOST: clamav
+      QUARANTINE_KEY_FILE: /run/secrets/quarantine_key
+      QUARANTINE_PATH: /var/lib/quarantine
+    depends_on: { keys-init: { condition: service_completed_successfully } }
+    volumes: [quarantine:/var/lib/quarantine:ro, { type: volume, source: service-keys, target: /run/secrets, read_only: true, volume: { subpath: malware-worker } }]
+    read_only: true
+    tmpfs: ["/tmp:size=256m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 128
+    # No internet egress at all: Temporal + ClamAV only.
+    networks: [temporal_net, malware_net]
+
+
 networks:
- public: {}
- samiir: {internal: true}
- fatma: {internal: true}
- control: {internal: true}
-volumes: {postgres-data: {}}
+  edge: {}
+  samiir_net: { internal: true }
+  fatma_net: { internal: true }
+  ingest_net: { internal: true }
+  samiir_data: { internal: true }
+  edge_cache: { internal: true }
+  fatma_data: { internal: true }
+  temporal_net: { internal: true }
+  malware_net: { internal: true }
+  samiir_egress: {}
+  fatma_egress: {}
+  notify_egress: {}
+  scan_egress: {}
+  clamav_updates: {}
+
+volumes:
+  service-keys: {}
+  postgres-data: {}
+  redis-data: {}
+  temporal-data: {}
+  raw-events: {}
+  quarantine: {}

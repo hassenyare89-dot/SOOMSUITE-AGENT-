@@ -1,0 +1,34 @@
+# Two separate ingresses: the public edge (widget + webhooks) and the staff console.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 5m
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls: [{ hosts: [{{ .Values.ingress.publicHost }}], secretName: public-tls }]
+  rules:
+    - host: {{ .Values.ingress.publicHost }}
+      http:
+        paths:
+          - { path: /v1/, pathType: Prefix, backend: { service: { name: api-gateway-public, port: { number: 8000 } } } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 26m
+    {{- if .Values.ingress.adminAllowCIDRs }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ join "," .Values.ingress.adminAllowCIDRs | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls: [{ hosts: [{{ .Values.ingress.adminHost }}], secretName: admin-tls }]
+  rules:
+    - host: {{ .Values.ingress.adminHost }}
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: api-gateway-admin, port: { number: 8000 } } } }

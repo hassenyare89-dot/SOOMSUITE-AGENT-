@@ -1,0 +1,6 @@
+apiVersion: v2
+name: samiir-fatma
+description: SAMIIR + FATMA Secure AI Platform (production deployment)
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
