@@ -36,7 +36,7 @@ dev = [
   "openai-agents>=0.22,<0.23", "openai>=3.19,<4", "temporalio>=1.33,<2", "aiosmtplib>=5.1,<6",
   "dnspython>=2.8,<3", "yara-python>=4.5,<5", "pyyaml>=6,<7",
   "pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "respx>=0.23,<1",
-  "ruff>=0.16,<1", "mypy>=1.18,<2", "pip-audit>=2.9,<3", "bandit>=1.8,<2",
+  "ruff>=0.16,<1", "mypy>=1.18,<3", "pip-audit>=2.9,<3", "bandit>=1.8,<2",
 ]
 
 [build-system]
