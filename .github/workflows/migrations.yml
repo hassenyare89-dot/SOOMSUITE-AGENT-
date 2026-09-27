@@ -24,9 +24,9 @@ jobs:
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "3.13" }
       - run: pip install -e '.[dev]'
       - name: Upgrade → downgrade → upgrade (reversibility) and drift check
@@ -58,10 +58,10 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: Assume deploy role (OIDC, short-lived)
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.MIGRATION_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
